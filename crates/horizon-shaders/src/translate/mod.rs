@@ -28,8 +28,11 @@ use naga::valid::{Capabilities, ValidationFlags, Validator};
 use crate::Preprocessed;
 
 mod atomic_vectors;
+mod geometry;
 mod rewrite;
 mod scan;
+
+pub use geometry::{GeometryInputs, translate_geometry};
 
 use scan::Stage;
 

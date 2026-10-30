@@ -3611,6 +3611,7 @@ impl Renderer {
             clouds: Some(pack_entities::cloud_inputs()),
             weather: Some(pack_weather::inputs()),
             hand: Some(pack_hand::inputs()),
+            terrain_geometry: None,
         }
     }
 
