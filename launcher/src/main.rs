@@ -1431,7 +1431,7 @@ fn version_tag(tag: &str) -> Div {
         .line_height(px(28.))
         .font_weight(FontWeight::MEDIUM)
         .child(
-            horizon_launcher::nightly::label(tag)
+            horizon_launcher::nightly::full_label(tag)
                 .unwrap_or_else(|| tag.trim_start_matches('v').to_string()),
         )
 }
@@ -1785,12 +1785,13 @@ fn page_header(title: &str, description: &str, t: &Theme) -> Div {
 /// One row of a list, as its own panel: a name in the pixel face with an optional detail under
 /// it, then a value or a control on the right. Rows were numbered in the quiet look; `_n` keeps
 /// the call sites as they are.
-/// How an available update is named: a Nightly by its title ("Nightly 2026-10-28 · 0c02067"), a
+/// How an available update is named: a Nightly by its date and commit ("2026.10.28 (0c02067)"), a
 /// release by its tag.
-fn update_name(release: &Release) -> &str {
+fn update_name(release: &Release) -> String {
     match release.nightly {
-        Some(_) => &release.name,
-        None => &release.tag,
+        Some(_) => horizon_launcher::nightly::full_label(&release.tag)
+            .unwrap_or_else(|| release.name.clone()),
+        None => release.tag.clone(),
     }
 }
 
@@ -2272,7 +2273,7 @@ impl Launcher {
 
     fn picker(&self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        // "Nightly · ba6344a", a release's tag: the menu lists the full tags.
+        // "2026.10.30", a release's tag: the menu tells a day's builds apart.
         let label = self.selected().map_or_else(
             || "No version".into(),
             |tag| horizon_launcher::nightly::label(tag).unwrap_or_else(|| tag.clone()),
@@ -2346,7 +2347,10 @@ impl Launcher {
                         .text_color(t.ink)
                         .cursor_pointer()
                         .hover(move |s| s.bg(t.plate_soft))
-                        .child(tag.clone())
+                        .child(
+                            horizon_launcher::nightly::full_label(&tag)
+                                .unwrap_or_else(|| tag.clone()),
+                        )
                         .child(
                             div()
                                 .flex()
@@ -2860,7 +2864,7 @@ impl Launcher {
             }),
         );
         let horizon = match (&self.updates.horizon, &self.update_error) {
-            (Some(r), _) => trf("{version} available", &[("version", update_name(r))]),
+            (Some(r), _) => trf("{version} available", &[("version", &update_name(r))]),
             (None, Some(e)) => e.clone(),
             (None, None) if self.checked.is_some() => tr("Up to date").to_string(),
             _ => tr("Checking…").to_string(),

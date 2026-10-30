@@ -12,6 +12,11 @@ game tag is made, and a game build is named `nightly-<date>-<commit>` (its relea
 <commit>"), which launchers and servers rank after every `vX.Y.Z`. The launcher keeps its `launcher@X.Y.Z` tags on
 the release line. What follows describes the `vX.Y.Z` game tags as they were.
 
+Players read a Nightly by its date, not its commit: `Horizon 2026.10.28` on the title screen, `2026.10.28` in the
+launcher. Where two builds of a day can stand side by side (the launcher's version lists) and in crash reports the
+commit follows in brackets: `2026.10.28 (0c02067)`. Only the name shown changes: `nightly-<date>-<commit>` stays the
+version that launchers and servers install, rank and verify, and the release title stays the form they parse.
+
 ## Tags
 
 | | Game | Launcher |
