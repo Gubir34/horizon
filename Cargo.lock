@@ -1085,6 +1085,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-bedrock"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-bench"
 version = "0.1.0"
 dependencies = [
