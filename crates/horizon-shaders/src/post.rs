@@ -455,7 +455,14 @@ pub fn load_post(
             p
         });
     if let Some(inputs) = &inputs.terrain {
-        let terrain = gbuffers(&TERRAIN, Group::Gbuffers, inputs);
+        // Solid and cutout terrain draw together: the cutout test, unless `alphaTest.*` says
+        // otherwise (3.2).
+        let mut cutout = inputs.clone();
+        cutout.alpha_test = cutout.alpha_test.or(Some(crate::AlphaTest {
+            op: ">",
+            reference: 0.1,
+        }));
+        let terrain = gbuffers(&TERRAIN, Group::Gbuffers, &cutout);
         // gbuffers_water falls back to gbuffers_terrain's chain (2.3).
         let water = gbuffers(&WATER, Group::Translucent, inputs);
         loader.post.terrain = terrain;
