@@ -27,8 +27,13 @@ use naga::valid::{Capabilities, ValidationFlags, Validator};
 
 use crate::Preprocessed;
 
+mod atomic_vectors;
+mod geometry;
+mod ordering;
 mod rewrite;
 mod scan;
+
+pub use geometry::{GeometryInputs, translate_geometry};
 
 use scan::Stage;
 
@@ -47,6 +52,36 @@ pub struct Interface {
     pub outputs: Vec<u32>,
     /// A gbuffers program reads `DRAW_UNIFORMS`: the block at set 2, binding 0, set per draw.
     pub draw: bool,
+    /// Storage images (`colorimg4`...), after the samplers.
+    pub images: Vec<Image>,
+    /// The SSBOs' bindings in set 4 (`bufferObject.<n>`).
+    pub buffers: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Image {
+    pub name: String,
+    /// `image2D`, `uimage3D`...
+    pub ty: String,
+    /// The format qualifier (`rgba16f`).
+    pub format: String,
+    /// `readonly`, `writeonly`, empty for both, or `atomic` for an image an atomic function
+    /// uses.
+    pub access: String,
+    pub binding: u32,
+    /// A compute program's copy of image `before` as it was before the dispatch, which its
+    /// loads read (see `ordering`).
+    pub before: Option<String>,
+}
+
+/// A compute program (`deferred4_a.csh`): its module, what it reads and writes, and how many
+/// work groups it runs: `workGroups`, or `workGroupsRender` times the target's size over the
+/// local size (1, 1 when neither is set).
+pub struct ComputeProgram {
+    pub module: naga::Module,
+    pub interface: Interface,
+    pub work_groups: Option<[u32; 3]>,
+    pub work_groups_render: [f32; 2],
 }
 
 /// The uniforms a gbuffers program reads per draw (5.3's "D"), in a block of their own
@@ -238,6 +273,13 @@ fn translate(
             samplers.insert(name.clone(), ty.clone());
         }
     }
+    // `alphaTestRef` is the program's alpha test reference: a constant of the program.
+    let alpha_test_ref = gbuffers
+        .filter(|_| uniforms.get("alphaTestRef").is_some_and(|t| t == "float"))
+        .map(|g| g.alpha_test.map_or(0.0, |t| t.reference));
+    if alpha_test_ref.is_some() {
+        uniforms.remove("alphaTestRef");
+    }
     // Per-draw values move to their own block; another type than the documented one keeps
     // the frame's block (and reads zero).
     let mut draw = false;
@@ -258,13 +300,38 @@ fn translate(
             binding: 1 + 2 * i as u32,
         })
         .collect();
+    let images = bind_images([&v, &f], samplers.len());
 
     // Varyings by name: the vertex outputs, then fragment inputs the vertex stage lacks. A
-    // matrix or array travels as one varying per column or element (`varying_parts`).
+    // matrix or array travels as one varying per column or element (`varying_parts`), a
+    // struct as its members packed into vectors (`struct_parts`).
     let mut locations: BTreeMap<String, (u32, String)> = BTreeMap::new();
     let mut split: BTreeMap<String, (String, Vec<(String, String)>)> = BTreeMap::new();
-    for var in v.outs.iter().chain(&f.ins) {
+    let vars = v.outs.iter().map(|o| (&v, o));
+    for (stage, var) in vars.chain(f.ins.iter().map(|i| (&f, i))) {
         if locations.contains_key(&var.name) || split.contains_key(&var.name) {
+            continue;
+        }
+        if var.structure {
+            match struct_parts(&var.decl, &stage.structs) {
+                Some(parts) => {
+                    let mut copies = Vec::new();
+                    for (k, (decl, members)) in parts.into_iter().enumerate() {
+                        let part = format!("hz_v_{}_{k}", var.name);
+                        let next = locations.len() as u32;
+                        locations.insert(part.clone(), (next, decl));
+                        for (swizzle, access) in members {
+                            copies.push((format!("{part}{swizzle}"), access));
+                        }
+                    }
+                    split.insert(var.name.clone(), (String::new(), copies));
+                }
+                None => errors.push(Error {
+                    file: stage.pp.files.first().cloned().unwrap_or_default(),
+                    line: 0,
+                    message: format!("`{}`: this struct can't be a varying", var.name),
+                }),
+            }
             continue;
         }
         match varying_parts(&var.decl) {
@@ -286,33 +353,15 @@ fn translate(
     }
 
     let header = |stage: &Stage| {
-        let mut h = String::from("#version 450\n");
-        h.push_str("layout(set = 0, binding = 0) uniform HzUniforms { vec4 hz_target; vec4 hz_fog_color; vec4 hz_fog;");
-        for (name, ty) in &uniforms {
-            match ty.as_str() {
-                "bool" => write!(h, " int hz_bool_{name};"),
-                _ => match ty.split_once('[') {
-                    Some((base, size)) => write!(h, " {base} {name}[{size};"),
-                    None => write!(h, " {ty} {name};"),
-                },
-            }
-            .unwrap();
+        let mut h = resources(&uniforms, &samplers, &images);
+        if let Some(reference) = alpha_test_ref {
+            writeln!(h, "const float alphaTestRef = {reference:?};").unwrap();
         }
-        h.push_str(" };\n");
         if draw {
             h.push_str(
                 "layout(set = 2, binding = 0) uniform HzDraw { int renderStage; int entityId; \
                  int blockEntityId; int hz_draw_pad; vec4 entityColor; };\n",
             );
-        }
-        for s in &samplers {
-            let (texture, sampler) = split_sampler(&s.ty);
-            writeln!(
-                h,
-                "layout(set = 0, binding = {}) uniform {texture} {}; layout(set = 0, binding = {}) uniform {sampler} hz_s_{};",
-                s.binding, s.name, s.binding + 1, s.name
-            )
-            .unwrap();
         }
         let direction = if stage.kind == ShaderStage::Vertex {
             "out"
@@ -327,7 +376,7 @@ fn translate(
             )
             .unwrap();
         }
-        for (name, (global, _)) in &split {
+        for (name, (global, _)) in split.iter().filter(|(_, (g, _))| !g.is_empty()) {
             writeln!(h, "{}", global.replace("@", name)).unwrap();
         }
         if let (Some(inputs), ShaderStage::Vertex) = (gbuffers, stage.kind) {
@@ -368,7 +417,14 @@ fn translate(
         writeln!(vertex_main, "    {name} = hz_init_{name}();").unwrap();
     }
     vertex_main.push_str("    hz_main();\n");
-    for (name, (_, copies)) in &split {
+    // A struct's own declaration is the pack's: only a stage that declares it copies it.
+    let declared = |list: &[scan::Var], name: &str, global: &str| {
+        !global.is_empty() || list.iter().any(|var| var.name == name)
+    };
+    for (name, (global, copies)) in &split {
+        if !declared(&v.outs, name, global) {
+            continue;
+        }
         for (part, access) in copies {
             writeln!(vertex_main, "    {part} = {name}{access};").unwrap();
         }
@@ -390,7 +446,10 @@ fn translate(
             Target::Buffers => "    hz_FragCoord = gl_FragCoord;\n",
         });
     }
-    for (name, (_, copies)) in &split {
+    for (name, (global, copies)) in &split {
+        if !declared(&f.ins, name, global) {
+            continue;
+        }
         for (part, access) in copies {
             writeln!(fragment_main, "    {name}{access} = {part};").unwrap();
         }
@@ -399,6 +458,9 @@ fn translate(
         writeln!(fragment_main, "    {name} = hz_init_{name}();").unwrap();
     }
     fragment_main.push_str("    hz_main();\n");
+    for copy in &f.out_copies {
+        writeln!(fragment_main, "    {copy}").unwrap();
+    }
     // With `out` variables the pack tests alpha itself.
     if let Some(t) = gbuffers.and_then(|g| g.alpha_test)
         && f.outputs.contains(&0)
@@ -452,17 +514,259 @@ fn translate(
         })
         .collect();
     let outputs = f.outputs.iter().copied().collect();
+    let mut images = images;
+    mark_atomic(&vertex, &mut images);
+    mark_atomic(&fragment, &mut images);
     Ok(Program {
-        vertex,
-        fragment,
         interface: Interface {
             uniform_size,
             uniforms,
             samplers,
             outputs,
             draw,
+            images,
+            buffers: v.buffers.union(&f.buffers).copied().collect(),
         },
+        vertex,
+        fragment,
     })
+}
+
+/// Images an atomic function uses (naga gave them atomic access) are bound for atomics.
+fn mark_atomic(module: &naga::Module, images: &mut [Image]) {
+    for (_, g) in module.global_variables.iter() {
+        let naga::TypeInner::Image {
+            class: naga::ImageClass::Storage { access, .. },
+            ..
+        } = module.types[g.ty].inner
+        else {
+            continue;
+        };
+        if let Some(b) = &g.binding
+            && access.contains(naga::StorageAccess::ATOMIC)
+            && let Some(i) = images.iter_mut().find(|i| i.binding == b.binding)
+        {
+            i.access = "atomic".into();
+        }
+    }
+}
+
+/// The images of `stages`, by name, bound after `samplers` samplers.
+fn bind_images(stages: [&Stage; 2], samplers: usize) -> Vec<Image> {
+    let mut images: BTreeMap<String, scan::ImageDecl> = BTreeMap::new();
+    for stage in stages {
+        for i in &stage.images {
+            images.entry(i.name.clone()).or_insert_with(|| i.clone());
+        }
+    }
+    images
+        .into_values()
+        .enumerate()
+        .map(|(k, i)| Image {
+            name: i.name,
+            ty: i.ty,
+            format: i.format,
+            access: i.access,
+            binding: 1 + 2 * samplers as u32 + k as u32,
+            before: None,
+        })
+        .collect()
+}
+
+/// `#version 450`, the uniform block at binding 0, each sampler as a texture and a sampler
+/// object, and the images.
+fn resources(
+    uniforms: &BTreeMap<String, String>,
+    samplers: &[Sampler],
+    images: &[Image],
+) -> String {
+    let mut h = String::from("#version 450\n");
+    h.push_str("layout(set = 0, binding = 0) uniform HzUniforms { vec4 hz_target; vec4 hz_fog_color; vec4 hz_fog;");
+    for (name, ty) in uniforms {
+        match ty.as_str() {
+            "bool" => write!(h, " int hz_bool_{name};"),
+            _ => match ty.split_once('[') {
+                Some((base, size)) => write!(h, " {base} {name}[{size};"),
+                None => write!(h, " {ty} {name};"),
+            },
+        }
+        .unwrap();
+    }
+    h.push_str(" };\n");
+    for s in samplers {
+        let (texture, sampler) = split_sampler(&s.ty);
+        writeln!(
+            h,
+            "layout(set = 0, binding = {}) uniform {texture} {}; layout(set = 0, binding = {}) uniform {sampler} hz_s_{};",
+            s.binding, s.name, s.binding + 1, s.name
+        )
+        .unwrap();
+    }
+    for i in images {
+        writeln!(
+            h,
+            "layout(set = 0, binding = {}, {}) uniform {} {} {};",
+            i.binding, i.format, i.access, i.ty, i.name
+        )
+        .unwrap();
+    }
+    h
+}
+
+/// Translates a compute program (`.csh`).
+pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<Error>> {
+    let split = atomic_vectors::rewrite(compute);
+    let compute = split.as_ref().unwrap_or(compute);
+    let mut c = Stage::scan(compute, ShaderStage::Compute);
+    let mut errors = std::mem::take(&mut c.errors);
+    let mut uniforms: BTreeMap<String, String> = BTreeMap::new();
+    for (name, ty, _) in &c.uniforms {
+        uniforms.insert(name.clone(), ty.clone());
+    }
+    let samplers: Vec<Sampler> = c
+        .samplers
+        .iter()
+        .map(|(name, ty)| (name, ty))
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (name, ty))| Sampler {
+            name: name.clone(),
+            ty: ty.clone(),
+            binding: 1 + 2 * i as u32,
+        })
+        .collect();
+    let mut images = bind_images([&c, &c], samplers.len());
+    let code = c.rewrite(&samplers, &uniforms);
+    let code = work_group_size(&code);
+    let code = ordering::barriers_after_atomics(&code).unwrap_or(code);
+    let declared: Vec<(String, bool)> = c
+        .images
+        .iter()
+        .map(|i| (i.name.clone(), i.coherent))
+        .collect();
+    let before = ordering::snapshots(&code, &declared);
+    let code = ordering::read_before(&code, &before);
+    for name in before {
+        let image = images.iter().find(|i| i.name == name).expect("declared");
+        let copy = Image {
+            name: ordering::before_name(&name),
+            ty: image.ty.clone(),
+            format: image.format.clone(),
+            access: String::new(),
+            binding: 1 + 2 * samplers.len() as u32 + images.len() as u32,
+            before: Some(name),
+        };
+        images.push(copy);
+    }
+    let mut main = String::from("\nvoid main() {\n");
+    main.push_str(
+        "    hz_Fog = hz_FogParameters(hz_fog_color, hz_fog.x, hz_fog.y, hz_fog.z, hz_fog.w);\n",
+    );
+    for name in &c.inits {
+        writeln!(main, "    {name} = hz_init_{name}();").unwrap();
+    }
+    main.push_str("    hz_main();\n}\n");
+    let header = resources(&uniforms, &samplers, &images) + &c.prelude();
+    let text = format!("{header}{code}{main}");
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let module = compile(&c, &text, header.lines().count()).map_err(|e| {
+        errors.extend(e);
+        std::mem::take(&mut errors)
+    })?;
+    let (uniform_size, offsets) = block_layout(&module);
+    let mut interface = Interface {
+        uniform_size,
+        uniforms: offsets
+            .into_iter()
+            .filter_map(|(member, offset)| {
+                let name = member
+                    .strip_prefix("hz_bool_")
+                    .unwrap_or(&member)
+                    .to_owned();
+                let ty = if name.starts_with("hz_") {
+                    "vec4".to_owned()
+                } else {
+                    uniforms.get(&name)?.clone()
+                };
+                Some(Uniform { name, ty, offset })
+            })
+            .collect(),
+        samplers,
+        outputs: Vec::new(),
+        draw: false,
+        images,
+        buffers: c.buffers.iter().copied().collect(),
+    };
+    mark_atomic(&module, &mut interface.images);
+    Ok(ComputeProgram {
+        module,
+        interface,
+        work_groups: constant(&c, "workGroups").and_then(|v| match v[..] {
+            [x, y, z] => Some([x as u32, y as u32, z as u32]),
+            _ => None,
+        }),
+        work_groups_render: constant(&c, "workGroupsRender")
+            .and_then(|v| match v[..] {
+                [x, y] => Some([x as f32, y as f32]),
+                _ => None,
+            })
+            .unwrap_or([1.0, 1.0]),
+    })
+}
+
+/// `code` with `gl_WorkGroupSize` written as the constant its `layout(local_size_*)` declares:
+/// GLSL defines it so, and naga's HLSL writer has no such built-in.
+fn work_group_size(code: &str) -> String {
+    let tokens = crate::macros::lex(code);
+    if !tokens.contains(&"gl_WorkGroupSize") {
+        return code.to_owned();
+    }
+    let sig: Vec<&str> = tokens
+        .iter()
+        .copied()
+        .filter(|t| scan::significant(t))
+        .collect();
+    let size = |axis: &str| {
+        sig.windows(3)
+            .find(|w| w[0] == axis && w[1] == "=")
+            .and_then(|w| w[2].trim_end_matches(['u', 'U']).parse::<u32>().ok())
+            .unwrap_or(1)
+    };
+    let value = format!(
+        "uvec3({}u, {}u, {}u)",
+        size("local_size_x"),
+        size("local_size_y"),
+        size("local_size_z")
+    );
+    tokens
+        .iter()
+        .map(|&t| {
+            if t == "gl_WorkGroupSize" {
+                value.as_str()
+            } else {
+                t
+            }
+        })
+        .collect()
+}
+
+/// The numbers of a constant's constructor, `const ivec3 name = ivec3(1, 2, 3);` → 1, 2, 3.
+fn constant(stage: &Stage, name: &str) -> Option<Vec<f64>> {
+    let at = stage.tokens.iter().position(|&t| t == name)?;
+    let rest = &stage.tokens[at + 1..];
+    if rest.iter().find(|t| scan::significant(t)) != Some(&"=") {
+        return None;
+    }
+    let end = rest.iter().position(|&t| t == ";")?;
+    Some(
+        rest[..end]
+            .iter()
+            .filter_map(|t| t.trim_end_matches(['u', 'U', 'f', 'F']).parse().ok())
+            .collect(),
+    )
 }
 
 /// A matrix or array varying (`flat mat3 @[2];`): wgpu's stage interfaces take only scalars
@@ -511,6 +815,126 @@ fn varying_parts(decl: &str) -> Option<(String, Vec<(String, String)>)> {
     Some((format!("{ty} @{array};"), parts))
 }
 
+/// A struct varying (`flat Params @;`) as vectors: its scalar, vector and matrix members, through
+/// nested structs and arrays, packed four components at a time by base type. Each part: its
+/// declaration and, per member, the swizzle of the part and how to reach the member (`.a[1].b`).
+/// `None` for a member that can't travel (`bool`, an unknown type, a size that is not a number).
+#[allow(clippy::type_complexity)]
+fn struct_parts(
+    decl: &str,
+    structs: &std::collections::HashMap<String, Vec<(String, String)>>,
+) -> Option<Vec<(String, Vec<(String, String)>)>> {
+    let (before, after) = decl.split_once('@')?;
+    let mut words: Vec<&str> = before.split_whitespace().collect();
+    let ty = words.pop()?;
+    let qualifiers: String = words.iter().map(|w| format!("{w} ")).collect();
+    let mut leaves = Vec::new();
+    leaves_of(
+        ty,
+        after.trim().trim_end_matches(';'),
+        String::new(),
+        structs,
+        &mut leaves,
+    )?;
+    // Slots of one base type and up to four components: (base, used, members (from, size, access)).
+    let mut slots: Vec<(&str, usize, Vec<(usize, usize, String)>)> = Vec::new();
+    for (base, size, access) in leaves {
+        match slots
+            .iter_mut()
+            .find(|(b, used, _)| *b == base && used + size <= 4)
+        {
+            Some(slot) => {
+                slot.2.push((slot.1, size, access));
+                slot.1 += size;
+            }
+            None => slots.push((base, size, vec![(0, size, access)])),
+        }
+    }
+    Some(
+        slots
+            .into_iter()
+            .map(|(base, used, members)| {
+                let ty = match (base, used) {
+                    (b, 1) => b.to_owned(),
+                    ("float", n) => format!("vec{n}"),
+                    ("int", n) => format!("ivec{n}"),
+                    (_, n) => format!("uvec{n}"),
+                };
+                // Integers only travel flat.
+                let flat = if base != "float" && !qualifiers.contains("flat") {
+                    "flat "
+                } else {
+                    ""
+                };
+                let members = members
+                    .into_iter()
+                    .map(|(from, size, access)| {
+                        let swizzle = if used == 1 {
+                            String::new()
+                        } else {
+                            format!(".{}", &"xyzw"[from..from + size])
+                        };
+                        (swizzle, access)
+                    })
+                    .collect();
+                (format!("{flat}{qualifiers}{ty} @;"), members)
+            })
+            .collect(),
+    )
+}
+
+/// The scalars and vectors inside a value of type `ty` with array suffix `array`, reached by
+/// `access`: (base type, components, access).
+fn leaves_of(
+    ty: &str,
+    array: &str,
+    access: String,
+    structs: &std::collections::HashMap<String, Vec<(String, String)>>,
+    out: &mut Vec<(&'static str, usize, String)>,
+) -> Option<()> {
+    if let Some(rest) = array.trim().strip_prefix('[') {
+        let (n, rest) = rest.split_once(']')?;
+        for k in 0..n.trim().parse::<usize>().ok()? {
+            leaves_of(ty, rest, format!("{access}[{k}]"), structs, out)?;
+        }
+        return Some(());
+    }
+    if let Some(members) = structs.get(ty) {
+        for (member_ty, member) in members {
+            let (name, array) = member
+                .split_once('[')
+                .map_or((member.as_str(), ""), |(n, _)| (n, &member[n.len()..]));
+            leaves_of(member_ty, array, format!("{access}.{name}"), structs, out)?;
+        }
+        return Some(());
+    }
+    if let Some(dims) = ty.strip_prefix("mat") {
+        let (c, r) = dims.split_once('x').unwrap_or((dims, dims));
+        let (c, r) = (c.parse::<usize>().ok()?, r.parse::<usize>().ok()?);
+        for k in 0..c {
+            out.push(("float", r, format!("{access}[{k}]")));
+        }
+        return Some(());
+    }
+    let (base, size) = match ty {
+        "float" => ("float", 1),
+        "int" => ("int", 1),
+        "uint" => ("uint", 1),
+        _ => {
+            let (base, n) = if let Some(n) = ty.strip_prefix("vec") {
+                ("float", n)
+            } else if let Some(n) = ty.strip_prefix("ivec") {
+                ("int", n)
+            } else {
+                ("uint", ty.strip_prefix("uvec")?)
+            };
+            (base, n.parse().ok()?)
+        }
+    };
+    out.push((base, size, access));
+    Some(())
+}
+
 /// `sampler2DShadow` → (`texture2D`, `samplerShadow`); `isampler3D` → (`itexture3D`, `sampler`).
 pub(super) fn split_sampler(ty: &str) -> (String, &'static str) {
     let shadow = ty.ends_with("Shadow");
@@ -555,6 +979,8 @@ fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Modul
                 .collect::<Vec<_>>()
         })?;
     Validator::new(ValidationFlags::all(), Capabilities::all())
+        .subgroup_operations(naga::valid::SubgroupOperationSet::all())
+        .subgroup_stages(naga::valid::ShaderStages::all())
         .validate(&module)
         .map_err(|e| {
             let span = e.spans().next().map_or(naga::Span::default(), |(s, _)| *s);
@@ -902,6 +1328,192 @@ mod tests {
         assert_eq!(varying_parts("mat2x3 @[2];").unwrap().1[3].1, "[1][1]");
         assert!(varying_parts("vec4 @;").is_none());
         assert!(varying_parts("vec4 @[N];").is_none());
+    }
+
+    #[test]
+    fn sized_array_types_initialize_globals() {
+        let fsh = "#version 400\nuniform float k;\nivec3[2] offsets = ivec3[](ivec3(1, 0, 0), ivec3(0, int(k), 0));\n\
+                   out vec4 c;\nvoid main() { c = vec4(offsets[1], 1.0); }\n";
+        program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    #[test]
+    fn struct_varyings_travel_packed() {
+        let lib = "struct Light { vec3 color; float power; int id; mat2 m; float k[2]; };\n";
+        let vsh = "#version 400\n#include \"/lib.glsl\"\nflat out Light light;\nvoid main() {\n    \
+                   gl_Position = ftransform();\n    light.color = vec3(1.0);\n    light.id = 2;\n}\n";
+        let fsh = "#version 400\n#include \"/lib.glsl\"\nflat in Light light;\nout vec4 c;\n\
+                   void main() { c = vec4(light.color * light.power * light.m[1].x * light.k[1], float(light.id)); }\n";
+        let p = program(
+            &[
+                ("lib.glsl", lib),
+                ("composite.vsh", vsh),
+                ("composite.fsh", fsh),
+            ],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        // color and power, the matrix's columns, the array, and the int: four slots.
+        let inputs = p.fragment.entry_points[0].function.arguments.len();
+        assert_eq!(inputs, 4, "{inputs} inputs");
+        let structs = std::collections::HashMap::from([(
+            "S".to_owned(),
+            vec![
+                ("vec3".to_owned(), "a".to_owned()),
+                ("int".to_owned(), "i".to_owned()),
+                ("float".to_owned(), "b[2]".to_owned()),
+            ],
+        )]);
+        assert_eq!(
+            struct_parts("S @;", &structs).unwrap(),
+            [
+                (
+                    "vec4 @;".to_owned(),
+                    vec![
+                        (".xyz".to_owned(), ".a".to_owned()),
+                        (".w".to_owned(), ".b[0]".to_owned())
+                    ]
+                ),
+                (
+                    "flat int @;".to_owned(),
+                    vec![(String::new(), ".i".to_owned())]
+                ),
+                (
+                    "float @;".to_owned(),
+                    vec![(String::new(), ".b[1]".to_owned())]
+                ),
+            ]
+        );
+        let bools = std::collections::HashMap::from([(
+            "B".to_owned(),
+            vec![("bool".to_owned(), "b".to_owned())],
+        )]);
+        assert!(struct_parts("B @;", &bools).is_none());
+    }
+
+    #[test]
+    fn vulkan_type_names_are_free_names() {
+        let fsh = "#version 400\nuniform sampler2D colortex0;\nout vec4 c;\n\
+                   vec4 fetch(sampler2D sampler, vec2 p) { return texture(sampler, p); }\n\
+                   void main() { float texture2D = 1.0; c = fetch(colortex0, vec2(0.5)) * texture2D; }\n";
+        program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    #[test]
+    fn gathers_and_vertex_texture_reads_translate() {
+        let vsh = "#version 400\nuniform sampler2D colortex1;\nout vec3 tint;\nvoid main() {\n    \
+                   gl_Position = ftransform();\n    tint = texture(colortex1, vec2(0.5)).rgb;\n}\n";
+        let fsh = "#version 400\nuniform sampler2D colortex1;\nuniform sampler2D depthtex0;\nin vec3 tint;\nout vec4 c;\n\
+                   struct S { float k[2]; };\n\
+                   void main() {\n    const S s = S(float[2](1.0, 2.0));\n    \
+                   vec4 d = textureGather(depthtex0, vec2(0.5)) + textureGather(colortex1, vec2(0.5), 3);\n    \
+                   c = vec4(tint * vec3(d.x > 0.5) * s.k[1], float(ivec2(d.xy) % 2));\n}\n";
+        program(
+            &[("composite.vsh", vsh), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    #[test]
+    fn narrow_outputs_widen_and_inverse_is_ours() {
+        let fsh = "#version 400\nlayout(location = 0) out vec3 color;\nlayout(location = 1) out float depth;\n\
+                   uniform mat4 gbufferProjection;\nuniform mat3 m3;\n\
+                   void main() { color = (inverse(gbufferProjection) * vec4(1.0)).xyz * inverse(m3)[0]; depth = 0.5; }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let outputs: Vec<_> = p.fragment.entry_points[0]
+            .function
+            .result
+            .iter()
+            .flat_map(|r| match &p.fragment.types[r.ty].inner {
+                naga::TypeInner::Struct { members, .. } => {
+                    members.iter().map(|m| m.ty).collect::<Vec<_>>()
+                }
+                _ => vec![r.ty],
+            })
+            .map(|ty| p.fragment.types[ty].inner.clone())
+            .collect();
+        assert!(
+            outputs.iter().all(|t| matches!(
+                t,
+                naga::TypeInner::Vector {
+                    size: naga::VectorSize::Quad,
+                    ..
+                }
+            )),
+            "{outputs:?}"
+        );
+        assert!(p.fragment.functions.iter().all(|(_, f)| {
+            f.expressions.iter().all(|(_, e)| {
+                !matches!(
+                    e,
+                    naga::Expression::Math {
+                        fun: naga::MathFunction::Inverse,
+                        ..
+                    }
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn work_group_size_is_its_layout() {
+        let csh = "#version 430\nlayout(local_size_x = 8, local_size_y = 4) in;\n\
+                   layout(r32ui) uniform uimage2D colorimg4;\nvoid main() {\n    \
+                   imageStore(colorimg4, ivec2(gl_WorkGroupSize.xy), uvec4(gl_WorkGroupSize.z));\n}\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        let c = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let main = &c
+            .module
+            .functions
+            .iter()
+            .find(|f| f.1.name.as_deref() == Some("hz_main"))
+            .unwrap()
+            .1;
+        assert!(
+            main.expressions
+                .iter()
+                .any(|(_, e)| matches!(e, naga::Expression::Literal(naga::Literal::U32(8))))
+        );
+    }
+
+    #[test]
+    fn compute_programs_translate() {
+        let csh = "#version 430\nlayout(local_size_x = 64) in;\nconst ivec3 workGroups = ivec3(2, 1, 1);\n\
+                   layout(rgba16f) writeonly uniform image2D colorimg4;\nuniform sampler2D colortex4;\n\
+                   uniform float frameTimeCounter;\nshared vec3 sums[64];\nvoid main() {\n    \
+                   uint i = gl_LocalInvocationID.x;\n    sums[i] = texelFetch(colortex4, ivec2(i, 0), 0).rgb * frameTimeCounter;\n    \
+                   barrier();\n    if (i == 0u) imageStore(colorimg4, ivec2(0), vec4(sums[0] + subgroupAdd(sums[1]), 1.0));\n}\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        let c = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(c.work_groups, Some([2, 1, 1]));
+        assert_eq!(c.work_groups_render, [1.0, 1.0]);
+        assert_eq!(c.module.entry_points[0].workgroup_size, [64, 1, 1]);
+        let i = &c.interface;
+        assert_eq!(
+            (i.samplers[0].binding, i.images[0].binding),
+            (1, 3),
+            "{:?}",
+            i.images
+        );
+        assert_eq!(
+            (i.images[0].format.as_str(), i.images[0].access.as_str()),
+            ("rgba16f", "writeonly")
+        );
     }
 
     #[test]
