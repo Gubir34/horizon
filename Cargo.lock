@@ -1393,8 +1393,10 @@ dependencies = [
 name = "horizon-shaders"
 version = "0.1.0"
 dependencies = [
+ "half",
  "horizon-core",
  "naga",
+ "png",
  "zip",
 ]
 
