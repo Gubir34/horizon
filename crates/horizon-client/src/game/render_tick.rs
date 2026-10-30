@@ -283,6 +283,8 @@ impl Game<'_> {
         lightmap_brightness(if self.dim == Dim::Nether { 0.1 } else { 0.0 }, raw)
     }
     pub(super) fn tick_particles(&mut self) {
+        #[cfg(feature = "physx")]
+        self.tick_debris();
         self.fog.tick_flicker();
         let eye = self.eye_position();
         if let Some(e) = eye {

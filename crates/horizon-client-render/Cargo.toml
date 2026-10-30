@@ -57,6 +57,8 @@ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 [features]
 # Sound output: horizon-client's `audio` feature.
 audio = ["dep:cpal"]
+# Shows the physics debris extra: horizon-client's `physx` feature (docs/physx.md).
+physx = []
 # Helpers horizon-client's tests build their fixtures with.
 test-support = []
 

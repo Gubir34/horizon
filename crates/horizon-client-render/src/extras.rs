@@ -63,6 +63,8 @@ pub struct Extras {
     pub fullbright: bool,
     /// Held, dropped and burning light sources light their surroundings (`dynamic_light`).
     pub dynamic_lights: bool,
+    /// Broken blocks throw crumbs that PhysX moves (docs/physx.md); only builds with `physx` offer it.
+    pub physics_debris: bool,
     pub zoom: bool,
     /// A vanilla key name (`key.keyboard.z`).
     pub zoom_key: String,
@@ -119,6 +121,7 @@ impl Default for Extras {
         Self {
             fullbright: false,
             dynamic_lights: false,
+            physics_debris: false,
             zoom: false,
             zoom_key: "key.keyboard.z".into(),
             zoom_level: 4,
@@ -173,6 +176,7 @@ impl Extras {
             match key.trim() {
                 "fullbright" => e.fullbright = flag(e.fullbright),
                 "dynamicLights" => e.dynamic_lights = flag(e.dynamic_lights),
+                "physicsDebris" => e.physics_debris = flag(e.physics_debris),
                 "zoom" => e.zoom = flag(e.zoom),
                 "zoomKey" if value.starts_with("key.") => e.zoom_key = value.to_owned(),
                 "zoomLevel" => {
@@ -228,9 +232,10 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nphysicsDebris:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
+            bool_text(self.physics_debris),
             bool_text(self.zoom),
             self.zoom_key,
             self.zoom_level,
@@ -382,6 +387,7 @@ impl Cps {
 pub enum Item {
     Fullbright,
     DynamicLights,
+    PhysicsDebris,
     OwnNameTag,
     AutoReconnect,
     MouseTweaks,
@@ -397,7 +403,7 @@ pub enum Item {
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
     use Item::*;
-    vec![
+    let mut rows = vec![
         Err("Lighting"),
         Ok(Fullbright),
         Ok(DynamicLights),
@@ -410,13 +416,18 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SortKey),
         Err("Multiplayer"),
         Ok(AutoReconnect),
-    ]
+    ];
+    if cfg!(feature = "physx") {
+        rows.extend([Err("Physics"), Ok(PhysicsDebris)]);
+    }
+    rows
 }
 impl Item {
     pub fn caption(self) -> &'static str {
         match self {
             Item::Fullbright => "Fullbright",
             Item::DynamicLights => "Dynamic lights",
+            Item::PhysicsDebris => "Physics debris",
             Item::OwnNameTag => "Own name tag",
             Item::AutoReconnect => "Auto-reconnect",
             Item::MouseTweaks => "Mouse Tweaks controls",
@@ -434,8 +445,8 @@ impl Item {
         Some(match self {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence => {
+            Fullbright | DynamicLights | PhysicsDebris | OwnNameTag | MouseTweaks | Sort
+            | AutoReconnect | NoAi | AgentControl | DiscordPresence => {
                 return None;
             }
         })
@@ -446,6 +457,9 @@ impl Item {
             Item::Fullbright => "Show blocks and entities at full light, even in dark areas.",
             Item::DynamicLights => {
                 "Torches and other light sources held, dropped or on fire light the blocks around them."
+            }
+            Item::PhysicsDebris => {
+                "Broken blocks also throw crumbs that bounce and settle, simulated by PhysX. Only for show: nothing in the game reacts to them."
             }
             Item::OwnNameTag => {
                 "Shows your name above your head in third person, as other players see it. Hidden when the server hides your team's names or you're invisible."
@@ -481,7 +495,7 @@ impl Item {
         use crate::graphics_style::Cost;
         match self {
             Item::Fullbright => Some(Cost::None),
-            Item::DynamicLights => Some(Cost::Low),
+            Item::DynamicLights | Item::PhysicsDebris => Some(Cost::Low),
             Item::OwnNameTag | Item::AutoReconnect | Item::MouseTweaks | Item::Sort => {
                 Some(Cost::None)
             }
@@ -493,6 +507,7 @@ impl Item {
         Some(match self {
             Item::Fullbright => e.fullbright,
             Item::DynamicLights => e.dynamic_lights,
+            Item::PhysicsDebris => e.physics_debris,
             Item::OwnNameTag => e.own_name_tag,
             Item::AutoReconnect => e.auto_reconnect,
             Item::MouseTweaks => e.mouse_tweaks,
@@ -520,6 +535,7 @@ impl Item {
         match self {
             Item::Fullbright => e.fullbright = !e.fullbright,
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
+            Item::PhysicsDebris => e.physics_debris = !e.physics_debris,
             Item::OwnNameTag => e.own_name_tag = !e.own_name_tag,
             Item::AutoReconnect => e.auto_reconnect = !e.auto_reconnect,
             Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
@@ -547,7 +563,7 @@ mod tests {
     #[test]
     fn everything_is_off_by_default_and_round_trips() {
         let d = Extras::default();
-        assert!(!d.fullbright && !d.dynamic_lights);
+        assert!(!d.fullbright && !d.dynamic_lights && !d.physics_debris);
         assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
         assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag);
         assert!(d.discord_presence);

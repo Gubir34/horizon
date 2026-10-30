@@ -82,6 +82,8 @@ mod creative_hotbar;
 mod creatures;
 mod crossbow;
 pub(crate) mod cushions;
+#[cfg(feature = "physx")]
+mod debris;
 mod debug_keys;
 mod debug_stick;
 mod decorated_pot;
@@ -2096,6 +2098,9 @@ struct Game<'a> {
     frame_graph: horizon_client::perf_overlay::FrameGraph,
     /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/extras.rs`.
     extras: extras::ExtrasState,
+    /// Crumbs PhysX moves (`game/debris.rs`), none while the extra is off.
+    #[cfg(feature = "physx")]
+    debris: debris::Debris,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
     mods: mods::ModsState,
     /// Every item and recipe, for mods (`game/native_recipes.rs`), made once.
@@ -2831,6 +2836,8 @@ impl Game<'_> {
             let particle = Particle::terrain(self.particles.random(), p, v, sprite.clone(), tint);
             self.particles.push(particle);
         });
+        #[cfg(feature = "physx")]
+        self.spawn_debris(pos, &sprite, tint);
     }
     /// ClientLevel.addBreakingParticles: one crumb on the face being mined.
     fn crack_particle(&mut self, pos: [i32; 3], face: [i32; 3], state: BlockStateId) {
@@ -15150,6 +15157,8 @@ impl<'a> Game<'a> {
             pending_uploads: Vec::new(),
             frame_graph: Default::default(),
             extras: Default::default(),
+            #[cfg(feature = "physx")]
+            debris: Default::default(),
             mods: Default::default(),
             recipe_tables: Default::default(),
             panel: Default::default(),

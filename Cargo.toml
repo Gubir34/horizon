@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal"]
+exclude = ["crates/horizon-physx", "launcher","crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal"]
 members = [
     "crates/horizon-core",
     "crates/horizon-dualsense",

@@ -59,6 +59,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 gilrs = { version = "0.11", optional = true }
 # The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
 horizon-dualsense = { path = "../horizon-dualsense", optional = true }
+horizon-physx = { path = "../horizon-physx", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
 ureq = { version = "2", default-features = false, features = ["tls"] }
 unicode-bidi = "0.3.18"
@@ -91,6 +92,8 @@ default = ["audio", "controllers"]
 audio = ["horizon-client-render/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
 controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
+# Physics debris through NVIDIA PhysX, a C++ library, so off unless asked for (docs/physx.md).
+physx = ["dep:horizon-physx", "horizon-client-render/physx"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace"]
 

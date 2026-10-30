@@ -753,6 +753,21 @@ impl Particle {
         p.uv = [(uo + 1.0) / 4.0, vo / 4.0, uo / 4.0, (vo + 1.0) / 4.0];
         p
     }
+    /// This particle for one tick, moved from `previous` to `position` by something other than the
+    /// engine: Horizon's physics debris (docs/physx.md). Pushed before the engine's tick, it is drawn
+    /// until the next one, which removes it.
+    pub fn driven(&self, previous: [f64; 3], position: [f64; 3]) -> Self {
+        let mut p = self.clone();
+        p.previous = previous;
+        p.position = position;
+        p.velocity = [0.0; 3];
+        p.has_physics = false;
+        p.gravity = 0.0;
+        p.age = 0;
+        p.lifetime = 0;
+        p.bb = aabb_at(position, p.bb_width, p.bb_height);
+        p
+    }
     /// What `CritParticle`'s providers do once its constructor has ticked it.
     fn after_constructor_tick(&mut self) {
         match self.ty {
