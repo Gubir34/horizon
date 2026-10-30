@@ -23,7 +23,7 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 | Display | FOV, max framerate, VSync, fullscreen, GUI scale | `options.txt` |
 | | resolution scale, anti-aliasing (FXAA or TAA), TAA upscaling, present mode, frame pacing | `horizon-graphics.txt` |
 | HDR (its own screen, from Display) | HDR, black level, peak brightness, paper white, UI brightness | `horizon-graphics.txt` |
-| Performance | battery mode, worker threads, upload budget per frame | `horizon-graphics.txt` |
+| Performance | battery mode, worker threads, upload budget per frame, Graphics API, Graphics driver | `horizon-graphics.txt` |
 | Overlay | performance overlay: FPS, frame/CPU/GPU times, frame-time graph | `horizon-graphics.txt` |
 
 `options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, which changes timing, not pixels.
@@ -35,6 +35,28 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 HDR's light sources shine by the kind of light rather than its level (`mesher::hdr_tier`): the sun most, then glowstone, campfires and the soul fires, then flames and lava, torch and candle flames among them (particles too), then faint glowers such as a redstone torch or magma; glow lichen stays as in SDR. Each tier has its share of the headroom and the brightness its lift starts and ends at (`gfx/hdr.rs` `TIERS`); `HORIZON_HDR_DEBUG=1` greys what isn't lifted and tints what is magenta.
 
 Which settings each screen shows, their descriptions and costs are in `crates/horizon-client-render/src/graphics_ui.rs` (`rows`); `graphics_style.rs` draws them.
+
+## Graphics API and driver
+
+Two settings under Performance choose how the game draws, both applying at the next start. **Graphics API** is the language it speaks: Auto, Vulkan, OpenGL, and DirectX 12 on Windows; macOS has Metal only. **Graphics driver** (Linux) is whose code answers. Mesa is a driver family that implements Vulkan and OpenGL, not an API of its own, so it is a separate setting:
+
+| Driver | What it picks |
+|---|---|
+| Auto | The fastest GPU, on whatever driver it has |
+| Mesa | Mesa's hardware driver (RADV, RadeonSI, ANV, NVK...), or its software one if there is no other |
+| Software | The processor (llvmpipe, or lavapipe where installed): very slow, for testing or a broken driver |
+
+`HORIZON_GRAPHICS_API` (`auto`, `vulkan`, `dx12`, `opengl`) and `HORIZON_GRAPHICS_DRIVER` (`auto`, `mesa`, `software`) override them for one run. An API or driver that doesn't work here never stops the game, as the setting couldn't be reached to change it back: the log warns, and the game starts on what does work.
+
+On a computer that also has NVIDIA's driver, OpenGL only reaches Mesa through variables its libraries read as they load (`__EGL_VENDOR_LIBRARY_FILENAMES`, `DRI_PRIME`, `LIBGL_ALWAYS_SOFTWARE`). The game restarts itself once at launch with them, before any window exists and as the same process. Values you set yourself stand. Vulkan needs none of this.
+
+To see what this computer offers, and whether each adapter really draws:
+
+```sh
+cargo run -p horizon-client-render --example gpu_adapters
+```
+
+Horizon is tuned on Vulkan: OpenGL lacks compute shaders on some drivers, so some effects and GPU culling may be off there.
 
 ## Distant terrain
 

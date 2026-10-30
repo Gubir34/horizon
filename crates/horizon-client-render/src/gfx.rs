@@ -4,7 +4,7 @@
 use crate::{
     Result,
     environment::Sky,
-    graphics::GraphicsApi,
+    graphics::{DeviceChoice, GraphicsApi, GraphicsDriver},
     hud::{HudBatch, HudRenderer},
     mesher::{SectionMesh, Sides, TerrainVertex, Vertex},
     section_mask::SectionMask,
@@ -863,6 +863,77 @@ fn backend_order(api: GraphicsApi, os: &str, wgpu_backend: bool) -> Vec<wgpu::Ba
         GraphicsApi::OpenGl => vec![Backends::GL],
     }
 }
+/// Where glvnd, Linux's OpenGL dispatcher, describes Mesa's EGL.
+pub const MESA_EGL_VENDOR: &str = "/usr/share/glvnd/egl_vendor.d/50_mesa.json";
+/// What the environment must hold for `driver` to reach OpenGL. On a computer with NVIDIA's driver
+/// too, OpenGL's only adapter is NVIDIA's unless glvnd is told to load Mesa's. Only what isn't set yet, as a player's own values stand. Vulkan needs
+/// none of this. `has_vendor`: whether [`MESA_EGL_VENDOR`] exists; `is_set`: whether a variable is.
+pub fn mesa_opengl_env(
+    choice: DeviceChoice,
+    has_vendor: bool,
+    is_set: impl Fn(&str) -> bool,
+) -> Vec<(&'static str, &'static str)> {
+    let driver = choice.driver;
+    let opengl = matches!(choice.api, GraphicsApi::Auto | GraphicsApi::OpenGl);
+    if !opengl || driver == GraphicsDriver::Auto {
+        return Vec::new();
+    }
+    let mut env = Vec::new();
+    if has_vendor {
+        env.push(("__EGL_VENDOR_LIBRARY_FILENAMES", MESA_EGL_VENDOR));
+    }
+    match driver {
+        GraphicsDriver::Software => env.push(("LIBGL_ALWAYS_SOFTWARE", "1")),
+        // Mesa's OpenGL on a window another GPU shows falls to llvmpipe without this; with one GPU,
+        // Mesa ignores it.
+        _ => env.push(("DRI_PRIME", "1")),
+    }
+    env.retain(|(key, _)| !is_set(key));
+    env
+}
+/// Whether an adapter runs on the processor rather than a GPU.
+pub fn is_software(info: &wgpu::AdapterInfo) -> bool {
+    let name = info.name.to_lowercase();
+    info.device_type == wgpu::DeviceType::Cpu
+        || ["llvmpipe", "lavapipe", "softpipe", "swiftshader"]
+            .iter()
+            .any(|n| name.contains(n))
+}
+/// Whether an adapter runs on one of Mesa's drivers. Vulkan's driver info and OpenGL's version
+/// string both say "Mesa" with its version; the rest are names of Mesa's own drivers.
+pub fn is_mesa(info: &wgpu::AdapterInfo) -> bool {
+    let text = format!("{} {} {}", info.name, info.driver, info.driver_info).to_lowercase();
+    [
+        "mesa", "radv", "nvk", "turnip", "hasvk", "llvmpipe", "lavapipe", "softpipe",
+    ]
+    .iter()
+    .any(|n| text.contains(n))
+}
+/// Which of `adapters` suits `driver`, by index, the fastest kind first; None for no such adapter
+/// or for Auto, which wgpu's own choice serves.
+pub fn pick_adapter(driver: GraphicsDriver, adapters: &[wgpu::AdapterInfo]) -> Option<usize> {
+    let suits = |info: &wgpu::AdapterInfo| match driver {
+        GraphicsDriver::Auto => false,
+        GraphicsDriver::Mesa => is_mesa(info),
+        GraphicsDriver::Software => is_software(info),
+    };
+    let rank = |info: &wgpu::AdapterInfo| {
+        if is_software(info) {
+            return 0;
+        }
+        match info.device_type {
+            wgpu::DeviceType::DiscreteGpu => 3,
+            wgpu::DeviceType::IntegratedGpu => 2,
+            _ => 1,
+        }
+    };
+    adapters
+        .iter()
+        .enumerate()
+        .filter(|(_, info)| suits(info))
+        .max_by_key(|(i, info)| (rank(info), std::cmp::Reverse(*i)))
+        .map(|(i, _)| i)
+}
 fn backends_name(backends: wgpu::Backends) -> &'static str {
     match backends {
         wgpu::Backends::VULKAN => "Vulkan",
@@ -949,23 +1020,37 @@ fn surface_format(
 async fn open_device(
     window: &Arc<Window>,
     offscreen: bool,
-    api: GraphicsApi,
+    choice: DeviceChoice,
     layers: u32,
 ) -> Result<Opened> {
-    let order = backend_order(
-        api.with_env(),
-        std::env::consts::OS,
-        std::env::var_os("WGPU_BACKEND").is_some(),
-    );
-    let mut failures = Vec::new();
-    for (attempt, backends) in order.iter().copied().enumerate() {
-        let name = backends_name(backends);
-        if attempt > 0 {
-            log::warn!("Horizon renderer: trying {name} ({})", failures.join("; "));
+    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
+    let mut order = backend_order(choice.api.with_env(), std::env::consts::OS, wgpu_backend);
+    // An API that doesn't work here must not stop the game either: the player couldn't reach the
+    // setting to change it back. Auto's backends follow the chosen one, with a warning below.
+    for backends in backend_order(GraphicsApi::Auto, std::env::consts::OS, wgpu_backend) {
+        if !order.contains(&backends) {
+            order.push(backends);
         }
-        match open_with_retry(backends, window, offscreen, layers).await {
-            Ok(opened) => return Ok(opened),
-            Err(e) => failures.push(e),
+    }
+    // A driver this computer doesn't have must never stop the game: every backend gets a try at it,
+    // and then the game starts as on Auto.
+    let driver = choice.driver.with_env();
+    let passes: &[GraphicsDriver] = if driver == GraphicsDriver::Auto {
+        &[GraphicsDriver::Auto]
+    } else {
+        &[driver, GraphicsDriver::Auto]
+    };
+    let mut failures = Vec::new();
+    for pass in passes {
+        for backends in order.iter().copied() {
+            let name = backends_name(backends);
+            if !failures.is_empty() {
+                log::warn!("Horizon renderer: trying {name} ({})", failures.join("; "));
+            }
+            match open_with_retry(backends, window, offscreen, layers, *pass).await {
+                Ok(opened) => return Ok(opened),
+                Err(e) => failures.push(e),
+            }
         }
     }
     Err(format!("{NO_GPU_DRIVER} ({})", failures.join("; ")).into())
@@ -987,15 +1072,16 @@ async fn open_with_retry(
     window: &Arc<Window>,
     offscreen: bool,
     layers: u32,
+    driver: GraphicsDriver,
 ) -> std::result::Result<Opened, String> {
-    match open_backend(backends, window, offscreen, false, layers).await {
+    match open_backend(backends, window, offscreen, false, layers, driver).await {
         Err(NoDevice::NoAdapter(hidden)) => {
             log::warn!(
                 "Horizon renderer: {} has no conformant adapter ({hidden}); asking again for the \
                  ones wgpu hides as non-conformant",
                 backends_name(backends)
             );
-            match open_backend(backends, window, offscreen, true, layers).await {
+            match open_backend(backends, window, offscreen, true, layers, driver).await {
                 Ok(opened) => {
                     log::warn!(
                         "Horizon renderer: using {} although its driver reports no Vulkan \
@@ -1019,6 +1105,7 @@ async fn open_backend(
     offscreen: bool,
     allow_nonconformant: bool,
     layers: u32,
+    driver: GraphicsDriver,
 ) -> std::result::Result<Opened, NoDevice> {
     let name = backends_name(backends);
     let instance = wgpu::Instance::new(instance_descriptor(
@@ -1034,17 +1121,43 @@ async fn open_backend(
             Err(e) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
         }
     };
-    let adapter = match instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: surface.as_ref(),
-            force_fallback_adapter: false,
-            ..Default::default()
-        })
-        .await
-    {
-        Ok(adapter) => adapter,
-        Err(e) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
+    let adapter = if driver == GraphicsDriver::Auto {
+        match instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: surface.as_ref(),
+                force_fallback_adapter: false,
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(adapter) => adapter,
+            Err(e) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
+        }
+    } else {
+        let mut adapters: Vec<wgpu::Adapter> = instance
+            .enumerate_adapters(backends)
+            .await
+            .into_iter()
+            .filter(|a| surface.as_ref().is_none_or(|s| a.is_surface_supported(s)))
+            .collect();
+        let infos: Vec<wgpu::AdapterInfo> = adapters.iter().map(wgpu::Adapter::get_info).collect();
+        match pick_adapter(driver, &infos) {
+            Some(i) => {
+                if driver == GraphicsDriver::Mesa && is_software(&infos[i]) {
+                    log::warn!(
+                        "Horizon renderer: Mesa has no GPU to offer here, so it runs on the processor"
+                    );
+                }
+                adapters.swap_remove(i)
+            }
+            None => {
+                return Err(NoDevice::NoAdapter(format!(
+                    "{name}: no {} driver",
+                    driver.label()
+                )));
+            }
+        }
     };
     describe_adapter(&adapter);
     let info = adapter.get_info();
@@ -1182,7 +1295,7 @@ impl Renderer {
         panorama_faces: &panorama::Faces,
         prepared: Option<PreparedTextures>,
         previous: Option<&Self>,
-        api: GraphicsApi,
+        choice: DeviceChoice,
     ) -> Result<Self> {
         let split = sprite_split();
         if layers > split * SPRITE_ARRAYS {
@@ -1225,7 +1338,7 @@ impl Renderer {
                     queue: renderer.queue.clone(),
                 }
             }
-            None => open_device(&window, offscreen, api, layers).await?,
+            None => open_device(&window, offscreen, choice, layers).await?,
         };
         let info = adapter.get_info();
         crate::graphics::suggest_reduced_far_detail(crate::graphics::lod_capped(&info));
@@ -6113,6 +6226,80 @@ mod tests {
             [0, 1, 3, 4, 11, 2, 7, 9, 10, 5, 6, 8]
         );
     }
+    fn adapter(name: &str, driver_info: &str, device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
+        wgpu::AdapterInfo {
+            name: name.into(),
+            driver_info: driver_info.into(),
+            device_type,
+            ..wgpu::AdapterInfo::new(wgpu::DeviceType::Other, wgpu::Backend::Vulkan)
+        }
+    }
+
+    #[test]
+    fn a_driver_setting_finds_its_adapter_and_auto_leaves_it_to_wgpu() {
+        use super::{GraphicsDriver, pick_adapter};
+        use wgpu::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu};
+        let nvidia = adapter("NVIDIA GeForce RTX 4060", "615.78.08", DiscreteGpu);
+        let radv = adapter(
+            "AMD Radeon 780M (RADV PHOENIX)",
+            "Mesa 26.2.5",
+            IntegratedGpu,
+        );
+        let lavapipe = adapter("llvmpipe (LLVM 20.1.8, 256 bits)", "Mesa 26.2.5", Cpu);
+        let all = [nvidia.clone(), lavapipe.clone(), radv.clone()];
+        assert_eq!(pick_adapter(GraphicsDriver::Auto, &all), None);
+        // Mesa's hardware driver before its software one, never NVIDIA's.
+        assert_eq!(pick_adapter(GraphicsDriver::Mesa, &all), Some(2));
+        assert_eq!(pick_adapter(GraphicsDriver::Software, &all), Some(1));
+        let vendor_only = [nvidia];
+        assert_eq!(pick_adapter(GraphicsDriver::Mesa, &vendor_only), None);
+        assert_eq!(pick_adapter(GraphicsDriver::Software, &vendor_only), None);
+        // OpenGL says Mesa in its version string.
+        let opengl = adapter(
+            "AMD Radeon 780M",
+            "4.6 (Core Profile) Mesa 26.2.5",
+            IntegratedGpu,
+        );
+        assert_eq!(pick_adapter(GraphicsDriver::Mesa, &[opengl]), Some(0));
+    }
+
+    #[test]
+    fn only_opengl_with_a_chosen_driver_needs_the_environment() {
+        use super::{DeviceChoice, GraphicsApi, GraphicsDriver, MESA_EGL_VENDOR, mesa_opengl_env};
+        let env = |api, driver| {
+            mesa_opengl_env(DeviceChoice { api, driver }, true, |_| false)
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect::<Vec<_>>()
+        };
+        const EGL: &str = "__EGL_VENDOR_LIBRARY_FILENAMES";
+        const SOFT: &str = "LIBGL_ALWAYS_SOFTWARE";
+        assert!(env(GraphicsApi::Auto, GraphicsDriver::Auto).is_empty());
+        assert!(env(GraphicsApi::OpenGl, GraphicsDriver::Auto).is_empty());
+        assert!(env(GraphicsApi::Vulkan, GraphicsDriver::Mesa).is_empty());
+        assert_eq!(
+            env(GraphicsApi::OpenGl, GraphicsDriver::Mesa),
+            [EGL, "DRI_PRIME"]
+        );
+        assert_eq!(
+            env(GraphicsApi::Auto, GraphicsDriver::Software),
+            [EGL, SOFT]
+        );
+        let choice = DeviceChoice {
+            api: GraphicsApi::OpenGl,
+            driver: GraphicsDriver::Software,
+        };
+        // Set already, nothing is left to do: a restart can't repeat.
+        assert!(mesa_opengl_env(choice, true, |_| true).is_empty());
+        // A player's own vendor stands; no vendor file, no vendor variable.
+        assert_eq!(
+            mesa_opengl_env(choice, true, |key| key == EGL),
+            [(SOFT, "1")]
+        );
+        assert_eq!(mesa_opengl_env(choice, false, |_| false), [(SOFT, "1")]);
+        assert_eq!(MESA_EGL_VENDOR.rsplit('/').next(), Some("50_mesa.json"));
+    }
+
     #[test]
     fn auto_tries_vulkan_then_directx_12_then_opengl() {
         use super::{GraphicsApi, backend_order};

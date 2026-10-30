@@ -249,7 +249,7 @@ impl Game<'_> {
                     &gui,
                     self.renderer.as_ref(),
                     Some(textures),
-                    self.settings.horizon.api,
+                    self.settings.horizon.device_choice(),
                 )
             })
             .transpose()

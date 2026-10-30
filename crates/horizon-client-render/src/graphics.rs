@@ -193,6 +193,61 @@ impl GraphicsApi {
     }
 }
 
+/// Whose driver the renderer runs on, whichever [`GraphicsApi`] it speaks. Mesa is not an API but a
+/// driver family that implements Vulkan and OpenGL, so it is its own setting. Applies at the next
+/// start; with no such driver on this computer, the game warns and starts as on Auto.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GraphicsDriver {
+    /// The fastest GPU, on whatever driver it has.
+    #[default]
+    Auto,
+    /// Mesa's drivers (RADV, ANV, NVK, Nouveau, RadeonSI, Iris...), hardware before software.
+    Mesa,
+    /// The processor instead of a GPU (Mesa's lavapipe or llvmpipe): slow, for testing or a broken driver.
+    Software,
+}
+impl GraphicsDriver {
+    pub const ALL: [GraphicsDriver; 3] = [
+        GraphicsDriver::Auto,
+        GraphicsDriver::Mesa,
+        GraphicsDriver::Software,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            GraphicsDriver::Auto => "auto",
+            GraphicsDriver::Mesa => "mesa",
+            GraphicsDriver::Software => "software",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            GraphicsDriver::Auto => "Auto",
+            GraphicsDriver::Mesa => "Mesa",
+            GraphicsDriver::Software => "Software",
+        }
+    }
+    /// The driver a name stands for, ignoring case; `None` for anything else.
+    pub fn from_name(s: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|driver| driver.name().eq_ignore_ascii_case(s.trim()))
+    }
+    /// `HORIZON_GRAPHICS_DRIVER` (auto, mesa or software) if set, else the setting.
+    pub fn with_env(self) -> Self {
+        std::env::var("HORIZON_GRAPHICS_DRIVER")
+            .ok()
+            .and_then(|v| Self::from_name(&v))
+            .unwrap_or(self)
+    }
+}
+
+/// How the renderer opens its device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct DeviceChoice {
+    pub api: GraphicsApi,
+    pub driver: GraphicsDriver,
+}
+
 /// What the frame limiter does in the last half millisecond before a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Pacing {
@@ -395,8 +450,10 @@ pub struct Graphics {
     /// or behind other windows, and half the worker threads. Off by default;
     /// it changes when frames are drawn, never what they show or the ticks.
     pub battery: bool,
-    /// The graphics API (Windows only; see `GraphicsApi`).
+    /// The graphics API (Windows and Linux; see `GraphicsApi`).
     pub api: GraphicsApi,
+    /// Whose driver it runs on (see `GraphicsDriver`).
+    pub driver: GraphicsDriver,
     /// The shader pack picked in `shaderpacks/` (`shader_pack_list`); empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
     /// ignored.
@@ -431,6 +488,7 @@ impl Default for Graphics {
             hdr_ui_brightness: 100,
             battery: false,
             api: GraphicsApi::Auto,
+            driver: GraphicsDriver::Auto,
             shader_pack: String::new(),
         }
     }
@@ -509,6 +567,7 @@ impl Graphics {
                 }
                 "batteryMode" => g.battery = flag(g.battery),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
+                "graphicsDriver" => g.driver = GraphicsDriver::from_name(value).unwrap_or_default(),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
                     g.overlay = match value {
@@ -524,7 +583,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nbatteryMode:{}\ngraphicsApi:{}\ngraphicsDriver:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -558,8 +617,16 @@ impl Graphics {
             self.hdr_ui_brightness,
             bool_text(self.battery),
             self.api.name(),
+            self.driver.name(),
             self.shader_pack,
         )
+    }
+    /// What the renderer opens its device with.
+    pub fn device_choice(&self) -> DeviceChoice {
+        DeviceChoice {
+            api: self.api,
+            driver: self.driver,
+        }
     }
     pub fn save(&self, dir: &Path) {
         let _ = fs::write(dir.join(FILE), self.serialize());
@@ -693,6 +760,7 @@ mod tests {
             hdr_ui_brightness: 60,
             battery: true,
             api: GraphicsApi::Dx12,
+            driver: GraphicsDriver::Mesa,
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);

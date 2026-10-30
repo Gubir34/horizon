@@ -11679,7 +11679,7 @@ impl Game<'_> {
             gui,
             self.renderer.as_ref(),
             None,
-            self.settings.horizon.api,
+            self.settings.horizon.device_choice(),
         )
     }
     fn apply_settings(&mut self) {
@@ -15969,7 +15969,7 @@ fn build_renderer(
     gui: &UiResources,
     previous: Option<&Renderer>,
     prepared: Option<horizon_client::gfx::PreparedTextures>,
-    api: horizon_client::graphics::GraphicsApi,
+    api: horizon_client::graphics::DeviceChoice,
 ) -> Result<Renderer> {
     let assets = &pack.render;
     let atlas = &gui.atlas;
@@ -16019,7 +16019,7 @@ fn loading_renderer(
     offscreen: bool,
     gui: Option<&UiResources>,
     previous: Option<&Renderer>,
-    api: horizon_client::graphics::GraphicsApi,
+    api: horizon_client::graphics::DeviceChoice,
 ) -> Result<Renderer> {
     static FORCEFIELD: [u8; 4] = [0; 4];
     static EMPTY_HUD: [u8; 4] = [0, 0, 0, 255];
@@ -16383,7 +16383,7 @@ impl Loading {
             offscreen,
             self.gui.as_ref(),
             None,
-            self.settings.horizon.api,
+            self.settings.horizon.device_choice(),
         ) {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
@@ -16428,7 +16428,7 @@ impl Loading {
             offscreen,
             self.gui.as_ref(),
             self.renderer.as_ref(),
-            self.settings.horizon.api,
+            self.settings.horizon.device_choice(),
         ) {
             Ok(r) => {
                 horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
@@ -16516,7 +16516,7 @@ impl Loading {
             &gui,
             self.renderer.as_ref(),
             loaded.renderer_cpu,
-            self.settings.horizon.api,
+            self.settings.horizon.device_choice(),
         )?;
         log::info!(
             "Horizon: world renderer ready after {} ms",
@@ -16722,10 +16722,47 @@ fn run_loading(
 
 pub use launch_api::{UsageError, exit_code};
 
+/// The Graphics driver setting reaches OpenGL through variables its libraries read as they load, and
+/// setting them while running isn't safe (`mesa_opengl_env`). So the game starts over once with them,
+/// before any window exists, as the same process: launchers see nothing. Set, it can't repeat.
+#[cfg(target_os = "linux")]
+fn restart_for_mesa_opengl() {
+    use horizon_client::gfx::{MESA_EGL_VENDOR, mesa_opengl_env};
+    use std::os::unix::process::CommandExt;
+    let Ok(dir) = std::env::current_dir() else {
+        return;
+    };
+    let graphics = horizon_client::graphics::Graphics::load(&dir);
+    let choice = horizon_client::graphics::DeviceChoice {
+        api: graphics.api.with_env(),
+        driver: graphics.driver.with_env(),
+    };
+    let env = mesa_opengl_env(
+        choice,
+        std::path::Path::new(MESA_EGL_VENDOR).exists(),
+        |key| std::env::var_os(key).is_some(),
+    );
+    if env.is_empty() {
+        return;
+    }
+    let Ok(program) = std::env::current_exe() else {
+        return;
+    };
+    let error = std::process::Command::new(program)
+        .args(std::env::args_os().skip(1))
+        .envs(env)
+        .exec();
+    log::warn!("Horizon renderer: could not start over for Mesa's OpenGL: {error}");
+}
+
 pub fn run() -> Result<()> {
     let Some(mut options) = Options::read()? else {
         return Ok(());
     };
+    #[cfg(target_os = "linux")]
+    if options.execution_role.is_client() {
+        restart_for_mesa_opengl();
+    }
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {

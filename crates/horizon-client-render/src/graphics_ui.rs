@@ -2,7 +2,9 @@
 //! they show, in what groups, with what description and cost, and their
 //! input. How they look comes from `graphics_style`.
 use crate::{
-    graphics::{FarDetail, GraphicsApi, Overlay, Pacing, PresentMode, Preset, Upscaling},
+    graphics::{
+        FarDetail, GraphicsApi, GraphicsDriver, Overlay, Pacing, PresentMode, Preset, Upscaling,
+    },
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
     settings::{Opt, Settings},
@@ -48,6 +50,7 @@ pub enum H {
     HdrUiBrightness,
     BatteryMode,
     GraphicsApi,
+    GraphicsDriver,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,6 +312,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
             ),
             h(
+                H::GraphicsDriver,
+                None,
+                "The fastest GPU, Mesa's drivers, or the processor (slow). Next start.",
+            ),
+            h(
                 H::UploadBudget,
                 Low,
                 "Mesh data sent to the GPU per frame. Lower is smoother while loading.",
@@ -321,7 +329,12 @@ pub fn rows(level: Level) -> Vec<Row> {
             ),
         ],
     };
-    // Only Windows and Linux have more than one graphics API.
+    // Only Windows and Linux have more than one graphics API, and Mesa is for Linux.
+    if !cfg!(target_os = "linux") {
+        rows.retain(
+            |row| !matches!(row, Row::Setting(s) if s.item == Item::Horizon(H::GraphicsDriver)),
+        );
+    }
     if cfg!(target_os = "macos") {
         rows.retain(
             |row| !matches!(row, Row::Setting(s) if s.item == Item::Horizon(H::GraphicsApi)),
@@ -456,6 +469,7 @@ impl H {
             H::HdrUiBrightness => labelled("UI Brightness", format!("{}%", g.hdr_ui_brightness)),
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
+            H::GraphicsDriver => labelled("Graphics driver", g.driver.label()),
             H::Overlay => labelled(
                 "Performance Overlay",
                 match g.overlay {
@@ -539,6 +553,7 @@ impl H {
             H::Hdr => g.hdr = !g.hdr,
             H::BatteryMode => g.battery = !g.battery,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
+            H::GraphicsDriver => g.driver = step(&GraphicsDriver::ALL, g.driver, back),
             H::Pacing => {
                 g.pacing = match g.pacing {
                     Pacing::Efficient => Pacing::Precise,
@@ -656,6 +671,7 @@ impl Item {
                     | H::Workers
                     | H::BatteryMode
                     | H::GraphicsApi
+                    | H::GraphicsDriver
             ) | Item::Vanilla(
                 Opt::GuiScale
                     | Opt::Fullscreen

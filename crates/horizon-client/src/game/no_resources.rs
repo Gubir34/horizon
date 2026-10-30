@@ -13,7 +13,7 @@ struct Missing {
     screen: NoResources,
     /// The pointer in physical pixels.
     pointer: (f64, f64),
-    api: horizon_client::graphics::GraphicsApi,
+    api: horizon_client::graphics::DeviceChoice,
     error: Option<Box<dyn std::error::Error>>,
 }
 
@@ -31,7 +31,7 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
         },
         screen: NoResources::new(looked_in),
         pointer: (0.0, 0.0),
-        api: settings.horizon.api,
+        api: settings.horizon.device_choice(),
         error: None,
     };
     horizon_client::hud::GUI_SCALE.store(settings.gui_scale, Ordering::Relaxed);
