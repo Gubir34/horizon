@@ -27,6 +27,7 @@ use naga::valid::{Capabilities, ValidationFlags, Validator};
 
 use crate::Preprocessed;
 
+mod atomic_vectors;
 mod rewrite;
 mod scan;
 
@@ -606,6 +607,8 @@ fn resources(
 
 /// Translates a compute program (`.csh`).
 pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<Error>> {
+    let split = atomic_vectors::rewrite(compute);
+    let compute = split.as_ref().unwrap_or(compute);
     let mut c = Stage::scan(compute, ShaderStage::Compute);
     let mut errors = std::mem::take(&mut c.errors);
     let mut uniforms: BTreeMap<String, String> = BTreeMap::new();
