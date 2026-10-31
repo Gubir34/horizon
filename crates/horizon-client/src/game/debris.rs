@@ -181,7 +181,7 @@ impl Game<'_> {
     /// The crumbs of a block just broken at `pos`. Nothing without the extra, or without a window: the
     /// server thread's `Game` sees the same events.
     pub(super) fn spawn_debris(&mut self, pos: [i32; 3], sprite: &str, tint: u32) {
-        if !self.settings.extras.physics_debris || self.renderer.is_none() {
+        if !self.settings.extras.debris_on() || self.renderer.is_none() {
             return;
         }
         let r = self.particles.random();

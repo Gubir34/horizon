@@ -65,6 +65,8 @@ pub struct Extras {
     pub dynamic_lights: bool,
     /// Broken blocks throw crumbs that PhysX moves (docs/physx.md); only builds with `physx` offer it.
     pub physics_debris: bool,
+    /// `physicsDebris:auto`, the default: on when the graphics card is NVIDIA's, whatever `physics_debris` holds.
+    pub physics_debris_auto: bool,
     pub zoom: bool,
     /// A vanilla key name (`key.keyboard.z`).
     pub zoom_key: String,
@@ -122,6 +124,7 @@ impl Default for Extras {
             fullbright: false,
             dynamic_lights: false,
             physics_debris: false,
+            physics_debris_auto: true,
             zoom: false,
             zoom_key: "key.keyboard.z".into(),
             zoom_level: 4,
@@ -176,7 +179,11 @@ impl Extras {
             match key.trim() {
                 "fullbright" => e.fullbright = flag(e.fullbright),
                 "dynamicLights" => e.dynamic_lights = flag(e.dynamic_lights),
-                "physicsDebris" => e.physics_debris = flag(e.physics_debris),
+                "physicsDebris" if value == "auto" => e.physics_debris_auto = true,
+                "physicsDebris" => {
+                    e.physics_debris = flag(e.physics_debris);
+                    e.physics_debris_auto = !matches!(value, "true" | "false");
+                }
                 "zoom" => e.zoom = flag(e.zoom),
                 "zoomKey" if value.starts_with("key.") => e.zoom_key = value.to_owned(),
                 "zoomLevel" => {
@@ -230,12 +237,24 @@ impl Extras {
         }
         e
     }
+    /// Whether the crumbs run: the player's choice, or by default whether the card is NVIDIA's.
+    pub fn debris_on(&self) -> bool {
+        if self.physics_debris_auto {
+            crate::gfx::is_nvidia()
+        } else {
+            self.physics_debris
+        }
+    }
     pub fn serialize(&self) -> String {
         format!(
             "fullbright:{}\ndynamicLights:{}\nphysicsDebris:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
-            bool_text(self.physics_debris),
+            if self.physics_debris_auto {
+                "auto"
+            } else {
+                bool_text(self.physics_debris)
+            },
             bool_text(self.zoom),
             self.zoom_key,
             self.zoom_level,
@@ -507,7 +526,7 @@ impl Item {
         Some(match self {
             Item::Fullbright => e.fullbright,
             Item::DynamicLights => e.dynamic_lights,
-            Item::PhysicsDebris => e.physics_debris,
+            Item::PhysicsDebris => e.debris_on(),
             Item::OwnNameTag => e.own_name_tag,
             Item::AutoReconnect => e.auto_reconnect,
             Item::MouseTweaks => e.mouse_tweaks,
@@ -535,7 +554,10 @@ impl Item {
         match self {
             Item::Fullbright => e.fullbright = !e.fullbright,
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
-            Item::PhysicsDebris => e.physics_debris = !e.physics_debris,
+            Item::PhysicsDebris => {
+                e.physics_debris = !e.debris_on();
+                e.physics_debris_auto = false;
+            }
             Item::OwnNameTag => e.own_name_tag = !e.own_name_tag,
             Item::AutoReconnect => e.auto_reconnect = !e.auto_reconnect,
             Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
@@ -563,7 +585,7 @@ mod tests {
     #[test]
     fn everything_is_off_by_default_and_round_trips() {
         let d = Extras::default();
-        assert!(!d.fullbright && !d.dynamic_lights && !d.physics_debris);
+        assert!(!d.fullbright && !d.dynamic_lights && !d.physics_debris && d.physics_debris_auto);
         assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
         assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag);
         assert!(d.discord_presence);
@@ -696,5 +718,21 @@ mod tests {
         for item in rows().into_iter().flatten() {
             assert!(!item.caption().is_empty() && !item.description().is_empty());
         }
+    }
+
+    #[test]
+    fn debris_follows_the_card_until_the_player_chooses() {
+        assert!(Extras::parse("").physics_debris_auto);
+        assert!(Extras::parse("physicsDebris:auto").physics_debris_auto);
+        let off = Extras::parse("physicsDebris:false");
+        assert!(!off.physics_debris_auto && !off.debris_on());
+        let on = Extras::parse("physicsDebris:true");
+        assert!(!on.physics_debris_auto && on.debris_on());
+        assert!(Extras::default().serialize().contains("physicsDebris:auto"));
+        // A click makes the choice explicit, flipping what the player sees.
+        let mut e = Extras::default();
+        let before = e.debris_on();
+        Item::PhysicsDebris.cycle(&mut e, false);
+        assert!(!e.physics_debris_auto && e.debris_on() != before);
     }
 }

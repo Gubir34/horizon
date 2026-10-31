@@ -15,7 +15,9 @@ It needs two things, as PhysX is a C++ library and most builds have no use for i
 cargo run --profile fast -p horizon-client --features physx -- --resources .local/horizon-client/26.3
 ```
 
-Then **Options → Horizon Settings... → Extras... → Physics debris**, off by default. A build without the feature doesn't
+Then **Options → Horizon Settings... → Extras... → Physics debris**. By default (`physicsDebris:auto` in the extras
+file) it is on when the graphics card is NVIDIA's and off on any other; one click in the setting makes your choice
+stick, on or off. A build without the feature doesn't
 show the setting, and doesn't need a C++ compiler or CMake.
 
 ## How it works

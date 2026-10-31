@@ -958,9 +958,18 @@ struct Opened {
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
+static NVIDIA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Whether the adapter the renderer runs on is NVIDIA's (`physicsDebris:auto` follows it).
+pub fn is_nvidia() -> bool {
+    NVIDIA.load(std::sync::atomic::Ordering::Relaxed)
+}
 /// Logs the adapter and records it for telemetry and crash reports.
 fn describe_adapter(adapter: &wgpu::Adapter) {
     let info = adapter.get_info();
+    NVIDIA.store(
+        horizon_telemetry::system::gpu_vendor(&info.name, info.vendor) == "nvidia",
+        std::sync::atomic::Ordering::Relaxed,
+    );
     log::info!(
         "Horizon renderer: {} ({:?}, {:?})",
         info.name,
