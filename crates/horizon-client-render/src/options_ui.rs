@@ -1055,6 +1055,7 @@ pub enum Page {
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
     None,
+    ImportPacks,
     Push(Page),
     Done,
     Cycle(Opt),
@@ -1140,6 +1141,8 @@ pub enum Event {
     /// A shader pack was picked or turned off: save and apply it.
     ShaderPack,
     OpenShaderPackFolder,
+    /// Horizon Settings' import button: packs and textures from other launchers (`pack_import`).
+    ImportPacks,
     /// Native mod `.0`'s page opened: the game asks the mod for its labels
     /// again (they were made with the list, maybe in another language).
     NativeSettings(usize),
@@ -1205,6 +1208,8 @@ pub struct OptionsUi {
     data_pack_stamp: (Vec<(String, Option<std::time::SystemTime>)>, Instant),
     /// A reload failure, dismissed before returning to the current page.
     pub resource_error: Option<String>,
+    /// What the import button last did, shown on it.
+    pub import_status: Option<String>,
     /// When the pack screen's search box took the focus (its cursor blink).
     pack_focus: Instant,
     pub in_world: bool,
@@ -1241,6 +1246,7 @@ impl Default for OptionsUi {
             data_pack_resources: Default::default(),
             data_pack_stamp: (Vec::new(), Instant::now()),
             resource_error: None,
+            import_status: None,
             pack_focus: Instant::now(),
             in_world: false,
             center_language: false,
@@ -1596,6 +1602,19 @@ impl OptionsUi {
                     Row::Buttons(
                         open("horizon.pages.open.extras", Page::Extras),
                         Some(open("horizon.pages.open.mods", Page::Mods)),
+                    ),
+                    Row::Buttons(
+                        button(
+                            0.0,
+                            0.0,
+                            310.0,
+                            match &self.import_status {
+                                Some(status) => Text::literal(status.clone()),
+                                None => tr("horizon.pages.import_packs"),
+                            },
+                            Act::ImportPacks,
+                        ),
+                        None,
                     ),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
@@ -2871,6 +2890,7 @@ impl OptionsUi {
                             }
                         }
                         Act::OpenShaderPackFolder => events.push(Event::OpenShaderPackFolder),
+                        Act::ImportPacks => events.push(Event::ImportPacks),
                         Act::Credits => events.push(Event::Credits),
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
                         Act::None => {}

@@ -4,6 +4,17 @@ Java Edition resource packs load in Horizon: put the folder or `.zip` in `resour
 screen (the same screen as vanilla's) or in game, and every loader reloads from it. This page lists everything a
 26.3 resource pack can change and whether Horizon honours it, with the proof.
 
+## Importing
+
+**Options → Horizon Settings → Import Packs and Textures from Minecraft** copies into `resourcepacks/`:
+
+- every pack in the game folders of the launchers found on this computer: the official launcher, SKLauncher, Prism, MultiMC, the Modrinth App and CurseForge, with their instances. A pack in several of them comes once.
+- the textures of each other Minecraft version you have, as a pack named `Minecraft <version> textures`, read directly from your own client jar. Only images and their animations are taken, and a texture whose path changed between versions is simply not used.
+
+It copies and never moves, and nothing already in `resourcepacks/` is overwritten, so pressing it again only adds what is new. Imported packs are turned on in the Resource Packs screen as usual. These packs hold Mojang's or their authors' files: they are for your own computer, not to share.
+
+A pack dropped on the Resource Packs screen is copied the same way. Dropping needs X11, Windows or macOS: winit delivers no dropped files on Wayland. Vanilla asks first with a confirmation screen; Horizon copies at once, as a copy can't overwrite anything.
+
 ## How it works
 
 `packs.rs` finds the packs (`FolderRepositorySource`: folders and zips, plus the built-in Programmer Art and High

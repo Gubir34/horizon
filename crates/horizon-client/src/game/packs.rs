@@ -30,6 +30,41 @@ pub fn packs_dir() -> PathBuf {
         .unwrap_or_default()
         .join("resourcepacks")
 }
+/// The import button: what the other launchers on this computer have goes into `resourcepacks/`
+/// (`pack_import`). Returns what to show on it.
+pub fn import_from_minecraft() -> String {
+    use horizon_client::{logging, pack_import, packs};
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let folders = pack_import::known_game_folders(&home, &logging::data_dir());
+    let summary = pack_import::import_all(
+        &folders,
+        &packs_dir(),
+        horizon_core::VANILLA_VERSION,
+        packs::RESOURCE_FORMAT,
+    );
+    horizon_client::lang::tr(
+        "horizon.pages.import_result",
+        &[&summary.imported, &summary.already_there, &summary.failed],
+    )
+}
+/// A file dropped on the Resource Packs screen, as vanilla's `onFilesDrop` copies it. Whether the
+/// list changed. winit delivers none on Wayland.
+pub fn drop_pack(path: &Path) -> bool {
+    match horizon_client::pack_import::import_pack(path, &packs_dir()) {
+        Ok(horizon_client::pack_import::Outcome::Imported(_)) => true,
+        Ok(outcome) => {
+            log::info!("Horizon: dropped {}: {outcome:?}", path.display());
+            false
+        }
+        Err(e) => {
+            log::warn!("Horizon: could not copy {}: {e}", path.display());
+            false
+        }
+    }
+}
 /// `Util.getPlatform().openPath`: the system file manager on the folder.
 pub fn open_folder(dir: &Path) {
     let program = if cfg!(target_os = "windows") {

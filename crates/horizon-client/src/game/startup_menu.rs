@@ -362,6 +362,15 @@ impl Loading {
         self.menu.options_open = true;
     }
 
+    /// A file dropped on the window: a pack, if the Resource Packs screen is open.
+    pub(super) fn pack_dropped(&mut self, path: &std::path::Path) {
+        if self.menu.options.page() == horizon_client::options_ui::Page::Packs
+            && packs::drop_pack(path)
+        {
+            self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root);
+            self.menu.options.pack_screen = None;
+        }
+    }
     fn menu_option_events(&mut self, events: Vec<Event>) {
         for event in events {
             match event {
@@ -417,6 +426,12 @@ impl Loading {
                     let dir = Game::shader_packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
+                }
+                Event::ImportPacks => {
+                    let status = packs::import_from_minecraft();
+                    self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root);
+                    self.menu.options.pack_screen = None;
+                    self.menu.options.import_status = Some(status);
                 }
                 Event::Credits => {
                     if let Some(gui) = &self.gui {

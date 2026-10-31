@@ -46,6 +46,8 @@
   "horizon.pages.open.shader_packs": "Shader Packs...",
   "horizon.pages.open.controller": "Controller Settings...",
   "horizon.pages.open.extras": "Extras...",
+  "horizon.pages.import_packs": "Import Packs and Textures from Minecraft",
+  "horizon.pages.import_result": "%s imported, %s already here, %s failed",
   "horizon.pages.open.mods": "Mods...",
   "horizon.pages.open.agent": "AI Agent...",
   "horizon.pages.open.horizon_graphics": "Horizon Graphics...",

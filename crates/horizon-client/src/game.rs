@@ -13731,6 +13731,13 @@ impl ApplicationHandler for Game<'_> {
             return;
         }
         follow_keymap(&mut event);
+        if let WindowEvent::DroppedFile(path) = &event
+            && self.screen == Screen::Options
+            && self.ui.options.page() == horizon_client::options_ui::Page::Packs
+            && packs::drop_pack(path)
+        {
+            self.refresh_pack_lists();
+        }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key) = event.physical_key
         {
@@ -16400,6 +16407,9 @@ impl Loading {
             return;
         }
         follow_keymap(&mut event);
+        if let WindowEvent::DroppedFile(path) = &event {
+            self.pack_dropped(path);
+        }
         if let Err(error) = self.menu_event(event_loop, event) {
             self.error = Some(error);
             event_loop.exit();
