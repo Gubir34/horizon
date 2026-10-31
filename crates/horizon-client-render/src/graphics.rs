@@ -205,18 +205,22 @@ pub enum GraphicsDriver {
     Mesa,
     /// The processor instead of a GPU (Mesa's lavapipe or llvmpipe): slow, for testing or a broken driver.
     Software,
+    /// Zink, Mesa's OpenGL on top of a Vulkan driver. Always OpenGL, whatever [`GraphicsApi`] says.
+    Zink,
 }
 impl GraphicsDriver {
-    pub const ALL: [GraphicsDriver; 3] = [
+    pub const ALL: [GraphicsDriver; 4] = [
         GraphicsDriver::Auto,
         GraphicsDriver::Mesa,
         GraphicsDriver::Software,
+        GraphicsDriver::Zink,
     ];
     pub fn name(self) -> &'static str {
         match self {
             GraphicsDriver::Auto => "auto",
             GraphicsDriver::Mesa => "mesa",
             GraphicsDriver::Software => "software",
+            GraphicsDriver::Zink => "zink",
         }
     }
     pub fn label(self) -> &'static str {
@@ -224,6 +228,7 @@ impl GraphicsDriver {
             GraphicsDriver::Auto => "Auto",
             GraphicsDriver::Mesa => "Mesa",
             GraphicsDriver::Software => "Software",
+            GraphicsDriver::Zink => "Zink",
         }
     }
     /// The driver a name stands for, ignoring case; `None` for anything else.
@@ -232,7 +237,7 @@ impl GraphicsDriver {
             .into_iter()
             .find(|driver| driver.name().eq_ignore_ascii_case(s.trim()))
     }
-    /// `HORIZON_GRAPHICS_DRIVER` (auto, mesa or software) if set, else the setting.
+    /// `HORIZON_GRAPHICS_DRIVER` (auto, mesa, software or zink) if set, else the setting.
     pub fn with_env(self) -> Self {
         std::env::var("HORIZON_GRAPHICS_DRIVER")
             .ok()

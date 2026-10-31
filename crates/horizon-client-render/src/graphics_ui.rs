@@ -314,7 +314,7 @@ pub fn rows(level: Level) -> Vec<Row> {
             h(
                 H::GraphicsDriver,
                 None,
-                "The fastest GPU, Mesa's drivers, or the processor (slow). Next start.",
+                "The fastest GPU, Mesa's drivers, the processor, or Zink. Next start.",
             ),
             h(
                 H::UploadBudget,

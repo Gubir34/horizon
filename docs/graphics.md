@@ -45,16 +45,19 @@ Two settings under Performance choose how the game draws, both applying at the n
 | Auto | The fastest GPU, on whatever driver it has |
 | Mesa | Mesa's hardware driver (RADV, RadeonSI, ANV, NVK...), or its software one if there is no other |
 | Software | The processor (llvmpipe, or lavapipe where installed): very slow, for testing or a broken driver |
+| Zink | Mesa's OpenGL on top of a Vulkan driver, Mesa's own where there is one. Always OpenGL, whatever Graphics API says |
 
-`HORIZON_GRAPHICS_API` (`auto`, `vulkan`, `dx12`, `opengl`) and `HORIZON_GRAPHICS_DRIVER` (`auto`, `mesa`, `software`) override them for one run. An API or driver that doesn't work here never stops the game, as the setting couldn't be reached to change it back: the log warns, and the game starts on what does work.
+`HORIZON_GRAPHICS_API` (`auto`, `vulkan`, `dx12`, `opengl`) and `HORIZON_GRAPHICS_DRIVER` (`auto`, `mesa`, `software`, `zink`) override them for one run. An API or driver that doesn't work here never stops the game, as the setting couldn't be reached to change it back: the log warns, and the game starts on what does work.
 
-On a computer that also has NVIDIA's driver, OpenGL only reaches Mesa through variables its libraries read as they load (`__EGL_VENDOR_LIBRARY_FILENAMES`, `DRI_PRIME`, `LIBGL_ALWAYS_SOFTWARE`). The game restarts itself once at launch with them, before any window exists and as the same process. Values you set yourself stand. Vulkan needs none of this.
+On a computer that also has NVIDIA's driver, OpenGL only reaches Mesa through variables its libraries read as they load (`__EGL_VENDOR_LIBRARY_FILENAMES`, `DRI_PRIME`, `LIBGL_ALWAYS_SOFTWARE`, `MESA_LOADER_DRIVER_OVERRIDE`). The game restarts itself once at launch with them, before any window exists and as the same process. Values you set yourself stand. Vulkan needs none of this.
 
 To see what this computer offers, and whether each adapter really draws:
 
 ```sh
 cargo run -p horizon-client-render --example gpu_adapters
 ```
+
+For open drivers only, choose Mesa or Zink: Auto takes the fastest GPU, which on a laptop may be on NVIDIA's closed driver. `DRI_PRIME=0` in the environment puts Zink on the first Vulkan driver instead.
 
 Horizon is tuned on Vulkan: OpenGL lacks compute shaders on some drivers, so some effects and GPU culling may be off there.
 

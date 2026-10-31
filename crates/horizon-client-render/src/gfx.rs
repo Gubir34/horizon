@@ -874,7 +874,8 @@ pub fn mesa_opengl_env(
     is_set: impl Fn(&str) -> bool,
 ) -> Vec<(&'static str, &'static str)> {
     let driver = choice.driver;
-    let opengl = matches!(choice.api, GraphicsApi::Auto | GraphicsApi::OpenGl);
+    let opengl = matches!(choice.api, GraphicsApi::Auto | GraphicsApi::OpenGl)
+        || driver == GraphicsDriver::Zink;
     if !opengl || driver == GraphicsDriver::Auto {
         return Vec::new();
     }
@@ -884,6 +885,12 @@ pub fn mesa_opengl_env(
     }
     match driver {
         GraphicsDriver::Software => env.push(("LIBGL_ALWAYS_SOFTWARE", "1")),
+        // Without DRI_PRIME Zink takes the first Vulkan driver it finds, NVIDIA's closed one on a
+        // laptop with both; with it, Mesa's, so the setting means open drivers all the way down.
+        GraphicsDriver::Zink => {
+            env.push(("MESA_LOADER_DRIVER_OVERRIDE", "zink"));
+            env.push(("DRI_PRIME", "1"));
+        }
         // Mesa's OpenGL on a window another GPU shows falls to llvmpipe without this; with one GPU,
         // Mesa ignores it.
         _ => env.push(("DRI_PRIME", "1")),
@@ -916,6 +923,7 @@ pub fn pick_adapter(driver: GraphicsDriver, adapters: &[wgpu::AdapterInfo]) -> O
         GraphicsDriver::Auto => false,
         GraphicsDriver::Mesa => is_mesa(info),
         GraphicsDriver::Software => is_software(info),
+        GraphicsDriver::Zink => info.name.to_lowercase().contains("zink"),
     };
     let rank = |info: &wgpu::AdapterInfo| {
         if is_software(info) {
@@ -1024,7 +1032,13 @@ async fn open_device(
     layers: u32,
 ) -> Result<Opened> {
     let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
-    let mut order = backend_order(choice.api.with_env(), std::env::consts::OS, wgpu_backend);
+    let driver = choice.driver.with_env();
+    let api = if driver == GraphicsDriver::Zink {
+        GraphicsApi::OpenGl
+    } else {
+        choice.api.with_env()
+    };
+    let mut order = backend_order(api, std::env::consts::OS, wgpu_backend);
     // An API that doesn't work here must not stop the game either: the player couldn't reach the
     // setting to change it back. Auto's backends follow the chosen one, with a warning below.
     for backends in backend_order(GraphicsApi::Auto, std::env::consts::OS, wgpu_backend) {
@@ -1034,7 +1048,6 @@ async fn open_device(
     }
     // A driver this computer doesn't have must never stop the game: every backend gets a try at it,
     // and then the game starts as on Auto.
-    let driver = choice.driver.with_env();
     let passes: &[GraphicsDriver] = if driver == GraphicsDriver::Auto {
         &[GraphicsDriver::Auto]
     } else {
@@ -6254,6 +6267,16 @@ mod tests {
         let vendor_only = [nvidia];
         assert_eq!(pick_adapter(GraphicsDriver::Mesa, &vendor_only), None);
         assert_eq!(pick_adapter(GraphicsDriver::Software, &vendor_only), None);
+        let zink = adapter(
+            "zink Vulkan 1.4 (RADV PHOENIX)",
+            "Mesa 26.2.5",
+            wgpu::DeviceType::Other,
+        );
+        assert_eq!(pick_adapter(GraphicsDriver::Zink, &all), None);
+        assert_eq!(
+            pick_adapter(GraphicsDriver::Zink, &[radv.clone(), zink]),
+            Some(1)
+        );
         // OpenGL says Mesa in its version string.
         let opengl = adapter(
             "AMD Radeon 780M",
@@ -6284,6 +6307,11 @@ mod tests {
         assert_eq!(
             env(GraphicsApi::Auto, GraphicsDriver::Software),
             [EGL, SOFT]
+        );
+        // Zink is OpenGL whatever the API setting says.
+        assert_eq!(
+            env(GraphicsApi::Vulkan, GraphicsDriver::Zink),
+            [EGL, "MESA_LOADER_DRIVER_OVERRIDE", "DRI_PRIME"]
         );
         let choice = DeviceChoice {
             api: GraphicsApi::OpenGl,
