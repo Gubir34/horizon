@@ -825,6 +825,19 @@ impl Game<'_> {
         }
         self.tick_dragon();
     }
+    /// A summoned dragon outside the End: no fight to run, but EnderDragon ticks in any dimension,
+    /// and takes its id and its parts' from the entity counter as it does in the fight.
+    pub(super) fn tick_dragon_elsewhere(&mut self) {
+        if let Some(d) = self.dragon.as_mut()
+            && d.id == 0
+        {
+            d.id = self.next_entity + 1;
+            self.next_entity += 9;
+        }
+        if self.dragon.is_some() {
+            self.tick_dragon();
+        }
+    }
     /// EndSpikeFeature's crystals (with fire under them on the bedrock).
     fn place_spike_crystals(&mut self) {
         for spike in horizon_world::worldgen::end_spike::spikes_for_seed(self.level.seed) {

@@ -32,6 +32,9 @@ pub(super) enum CartKind {
     /// `MinecartCommandBlock`; its command block holds no command, so an
     /// activator rail runs nothing.
     CommandBlock,
+    /// `MinecartSpawner`: shown with its spawner and dropping a plain minecart. Its `BaseSpawner`
+    /// doesn't run yet, so it spawns nothing.
+    Spawner,
 }
 impl CartKind {
     pub fn from_id(id: &str) -> Option<Self> {
@@ -42,6 +45,7 @@ impl CartKind {
             "furnace_minecart" => Self::Furnace,
             "tnt_minecart" => Self::Tnt,
             "command_block_minecart" => Self::CommandBlock,
+            "spawner_minecart" => Self::Spawner,
             _ => return None,
         })
     }
@@ -53,6 +57,14 @@ impl CartKind {
             Self::Furnace => "minecraft:furnace_minecart",
             Self::Tnt => "minecraft:tnt_minecart",
             Self::CommandBlock => "minecraft:command_block_minecart",
+            Self::Spawner => "minecraft:spawner_minecart",
+        }
+    }
+    /// `getDropItem`: its own item, except that no spawner minecart item exists.
+    fn drop_item(self) -> &'static str {
+        match self {
+            Self::Spawner => "minecraft:minecart",
+            kind => kind.id(),
         }
     }
     fn slots(self) -> usize {
@@ -69,7 +81,7 @@ impl CartKind {
     /// an empty cart.
     pub fn interact_passes(self, sneaking: bool, ridden: bool, game_master: bool) -> bool {
         match self {
-            Self::Tnt => true,
+            Self::Tnt | Self::Spawner => true,
             Self::CommandBlock => !game_master,
             Self::Rideable => sneaking || ridden,
             Self::Chest | Self::Hopper | Self::Furnace => false,
@@ -250,6 +262,7 @@ impl CartModels {
             CartKind::Furnace,
             CartKind::Tnt,
             CartKind::CommandBlock,
+            CartKind::Spawner,
         ];
         let models = kinds
             .into_iter()
@@ -1117,6 +1130,8 @@ impl Game<'_> {
             }
             // BaseCommandBlock.usedBy: only an operator in creative opens it.
             CartKind::CommandBlock => return false,
+            // No interact of its own: Entity.interact passes.
+            CartKind::Spawner => return false,
         }
         self.swing_arm();
         true
@@ -1236,7 +1251,12 @@ impl Game<'_> {
                         self.spawn_item(s.clone(), at, [0.0, 0.1, 0.0], 10);
                     }
                     if !creative {
-                        self.spawn_item(ItemStack::new(c.kind.id(), 1), at, [0.0, 0.1, 0.0], 10);
+                        self.spawn_item(
+                            ItemStack::new(c.kind.drop_item(), 1),
+                            at,
+                            [0.0, 0.1, 0.0],
+                            10,
+                        );
                     }
                 }
             }
@@ -1356,6 +1376,7 @@ impl Game<'_> {
             ),
             CartKind::Tnt => registry.default_state("minecraft:tnt"),
             CartKind::CommandBlock => registry.default_state("minecraft:command_block"),
+            CartKind::Spawner => registry.default_state("minecraft:spawner"),
         }
     }
     /// `AbstractMinecartRenderer` (old render): on the rail between the
@@ -1565,7 +1586,8 @@ impl Minecart {
                     put("TrackOutput", Tag::Byte(1));
                     put("UpdateLastExecution", Tag::Byte(1));
                 }
-                CartKind::Rideable => {}
+                // Its spawner's compound stays in the raw tag it was loaded from.
+                CartKind::Rideable | CartKind::Spawner => {}
             }
             // A loaded loot table goes back while the items are still its roll;
             // otherwise the items replace it, as vanilla's unpackLootTable does.
@@ -1633,6 +1655,18 @@ mod tests {
         assert_eq!(display_offset(CartKind::Tnt), 6.0);
         assert_eq!(display_offset(CartKind::CommandBlock), 6.0);
         assert_eq!(display_offset(CartKind::Rideable), 6.0);
+        assert_eq!(display_offset(CartKind::Spawner), 6.0);
+    }
+
+    #[test]
+    fn a_spawner_minecart_is_known_and_drops_a_plain_minecart() {
+        let kind = CartKind::from_id("minecraft:spawner_minecart").unwrap();
+        assert_eq!(kind, CartKind::Spawner);
+        assert_eq!(kind.id(), "minecraft:spawner_minecart");
+        assert_eq!(kind.drop_item(), "minecraft:minecart");
+        assert_eq!(CartKind::Hopper.drop_item(), "minecraft:hopper_minecart");
+        assert_eq!(kind.slots(), 0);
+        assert!(kind.interact_passes(false, false, true));
     }
 
     #[test]

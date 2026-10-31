@@ -1782,7 +1782,11 @@ pub fn ominous_item_spawner_to_nbt(
 /// and `spawn_item_after_ticks` (0 when absent). None without an item:
 /// such a spawner would spawn nothing.
 pub fn ominous_item_spawner_from_nbt(tag: &Tag) -> Option<(crate::items::ItemStack, Vec3, i64)> {
-    let item = tag.get("item").and_then(item_from_nbt)?;
+    // OminousItemSpawner.readAdditionalSaveData: an empty stack, when the compound names none.
+    let item = match tag.get("item") {
+        Some(item) => item_from_nbt(item)?,
+        None => crate::items::ItemStack::new("minecraft:air", 0),
+    };
     let after = number(tag.get("spawn_item_after_ticks")).unwrap_or(0);
     Some((item, position(tag)?, after))
 }
@@ -2061,8 +2065,14 @@ pub fn falling_block_to_nbt(
 }
 /// (block state tag, position, motion, time, fall distance)
 pub fn falling_block_from_nbt(tag: &Tag) -> Option<(Tag, Vec3, Vec3, i32, f64)> {
+    // FallingBlockEntity.DEFAULT_BLOCK_STATE: sand, when the compound names none.
+    let state = tag.get("BlockState").cloned().unwrap_or_else(|| {
+        let mut name = horizon_world::nbt::Compound::new();
+        name.insert("Name".into(), Tag::String("minecraft:sand".into()));
+        Tag::Compound(name)
+    });
     Some((
-        tag.get("BlockState")?.clone(),
+        state,
         position(tag)?,
         motion(tag),
         number(tag.get("Time")).unwrap_or(0) as i32,
@@ -2618,6 +2628,26 @@ mod tests {
         );
         assert_eq!((pos, after), (at, 97));
         assert!(ominous_item_spawner_from_nbt(&raw).is_none());
+    }
+
+    #[test]
+    fn what_a_summon_leaves_out_takes_vanillas_defaults() {
+        let mut tag = Tag::Compound(Compound::new());
+        let Tag::Compound(map) = &mut tag else {
+            unreachable!()
+        };
+        let pos = [1.5f64, 2.0, 3.5]
+            .map(|v| Tag::Double(v.to_bits()))
+            .to_vec();
+        map.insert("Pos".into(), Tag::List(pos));
+        // OminousItemSpawner: ItemStack.EMPTY.
+        let (item, _, after) = ominous_item_spawner_from_nbt(&tag).unwrap();
+        assert_eq!((item.count, after), (0, 0));
+        // FallingBlockEntity.DEFAULT_BLOCK_STATE: sand.
+        let (state, ..) = falling_block_from_nbt(&tag).unwrap();
+        assert!(
+            matches!(state.get("Name"), Some(Tag::String(s)) if s.to_string_lossy() == "minecraft:sand")
+        );
     }
 
     #[test]

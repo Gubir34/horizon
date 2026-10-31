@@ -154,6 +154,10 @@ impl Game<'_> {
     /// `spawnItem`: a projectile shot down, or an item entity; level event
     /// 3021 and the entity_place game event.
     fn spawn_ominous_item(&mut self, s: &OminousItemSpawner) {
+        // OminousItemSpawner.spawnItem: an empty stack spawns nothing.
+        if s.item.count == 0 {
+            return;
+        }
         let at = block(s.position);
         let p = s.position;
         match projectile(&s.item.item) {

@@ -502,6 +502,9 @@ impl Game<'_> {
         if self.dim == Dim::End {
             self.tick_fight();
             self.tick_dragon_fireballs();
+        } else {
+            self.tick_dragon_elsewhere();
+            self.tick_dragon_fireballs();
         }
         self.tick_crystals();
         self.tick_eyes();
