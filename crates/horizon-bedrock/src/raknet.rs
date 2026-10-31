@@ -73,6 +73,8 @@ pub enum DecodeError {
     BadText,
     /// A request 1 too small to be a real MTU probe.
     BadSize,
+    /// A connected-layer message whose fields don't make sense (named).
+    Malformed(&'static str),
 }
 
 impl std::fmt::Display for DecodeError {
@@ -83,6 +85,7 @@ impl std::fmt::Display for DecodeError {
             Self::BadAddress => "unknown address family",
             Self::BadText => "the status text isn't UTF-8",
             Self::BadSize => "an MTU probe of an impossible size",
+            Self::Malformed(what) => what,
         })
     }
 }

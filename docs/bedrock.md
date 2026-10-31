@@ -6,6 +6,9 @@ Nobody can play across editions today. What exists is the first layer, in `crate
 ## What works
 
 - RakNet's offline messages: the server-list ping and the connection handshake, read and written both ways.
+- RakNet sessions (`session.rs`): frame sets, acknowledgements, resends after a loss, reliable ordered and sequenced
+  frames, splitting and putting together large packets. A state machine with no socket or clock, tested on its own
+  (loss, reordering, duplicates, a silent peer, garbage input); not yet run over a real socket or against the game.
 - `horizon-bedrock ping` and `connect` talk to a server; `horizon-bedrock listen` answers a client's ping and handshake.
 
 It is tested by the crate's client and listener against each other on loopback, not yet against the real Bedrock
@@ -22,7 +25,8 @@ The game protocol number changes with every Bedrock release, so it is an argumen
 
 In order, each needing the one before it:
 
-1. **RakNet sessions**: connected datagrams, acknowledgements, resends, ordering, splitting large packets.
+1. **RakNet sessions**: the state machine is done; left is the socket loop around it and the connected handshake
+   (connection request, new incoming connection, pings).
 2. **Bedrock's packet layer**: batching, compression, and the game's own packet encoding.
 3. **Login**: Xbox Live sign-in and its signed identity chain, then the encryption handshake. Horizon joining an
    online-mode server needs the player's Microsoft account to sign in for Bedrock.
